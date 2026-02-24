@@ -3,35 +3,53 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 import os
+import urllib.request
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # ==================== 1. 系统环境配置 ====================
 
-# 🔧 修复字体问题：适配 Linux/Streamlit Cloud 环境
+# 🔧 终极字体修复：动态下载 Google Noto 中文字体
 import matplotlib.font_manager as fm
+from pathlib import Path
 
-# 尝试查找系统中文字体（按优先级）
-chinese_fonts = ['WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC',
-                 'Source Han Sans SC', 'SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+@st.cache_resource
+def setup_chinese_font():
+    """下载并配置中文字体（只执行一次）"""
+    # 创建字体目录
+    font_dir = Path("/tmp/fonts")
+    font_dir.mkdir(exist_ok=True)
+    
+    # Google Noto Sans CJK SC（思源黑体简体）- 开源可商用
+    font_url = "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf"
+    font_path = font_dir / "NotoSansCJKsc-Regular.otf"
+    
+    # 如果字体不存在，下载它（约 16MB）
+    if not font_path.exists():
+        try:
+            with st.spinner("首次运行：下载中文字体..."):
+                urllib.request.urlretrieve(font_url, font_path)
+        except Exception as e:
+            st.warning(f"字体下载失败，使用备用方案: {e}")
+            return None
+    
+    # 注册字体到 matplotlib
+    fm.fontManager.addfont(str(font_path))
+    prop = fm.FontProperties(fname=str(font_path))
+    
+    # 设置为默认字体
+    plt.rcParams['font.family'] = prop.get_name()
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    return prop.get_name()
 
-available_font = None
-for font in chinese_fonts:
-    try:
-        fm.findfont(fm.FontProperties(family=font), fallback_to_default=False)
-        available_font = font
-        break
-    except:
-        continue
+# 执行字体设置
+font_name = setup_chinese_font()
 
-if available_font:
-    plt.rcParams['font.sans-serif'] = [available_font, 'DejaVu Sans']
-else:
-    # 如果没有中文字体，使用 DejaVu Sans 并设置备用方案
+# 备用：如果下载失败，尝试系统字体
+if font_name is None:
     plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
 
-plt.rcParams['axes.unicode_minus'] = False
-
-# Streamlit 页面配置
 st.set_page_config(page_title="车联网隐私保护系统", layout="wide", page_icon="🛡️")
 
 
@@ -369,3 +387,4 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True
 )
+
