@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import time
 import os
 import urllib.request
-from cryptography.hazmat.primitives.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -429,3 +429,4 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True
 )
+
