@@ -6,9 +6,32 @@ import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # ==================== 1. 系统环境配置 ====================
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+
+# 🔧 修复字体问题：适配 Linux/Streamlit Cloud 环境
+import matplotlib.font_manager as fm
+
+# 尝试查找系统中文字体（按优先级）
+chinese_fonts = ['WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC',
+                 'Source Han Sans SC', 'SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+
+available_font = None
+for font in chinese_fonts:
+    try:
+        fm.findfont(fm.FontProperties(family=font), fallback_to_default=False)
+        available_font = font
+        break
+    except:
+        continue
+
+if available_font:
+    plt.rcParams['font.sans-serif'] = [available_font, 'DejaVu Sans']
+else:
+    # 如果没有中文字体，使用 DejaVu Sans 并设置备用方案
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+
 plt.rcParams['axes.unicode_minus'] = False
 
+# Streamlit 页面配置
 st.set_page_config(page_title="车联网隐私保护系统", layout="wide", page_icon="🛡️")
 
 
@@ -262,9 +285,9 @@ if uploaded_file and process_btn:
     else:
         recovered_pts, crypto_time, ciphertext = np.empty((0, 3)), 0.0001, b''
 
-    # ==================== 亮点1：功能演示 ====================
+    # ==================== 核心功能：选择性加密流程演示 ====================
     st.markdown("---")
-    st.subheader("🎯 亮点1：功能演示 - 选择性加密流程")
+    st.subheader("🎯 核心功能：选择性加密流程演示")
     st.pyplot(render_triple_comparison(xyz, mask, recovered_pts, measurement_mode, demo_seed))
 
     col1, col2, col3, col4 = st.columns(4)
@@ -273,7 +296,7 @@ if uploaded_file and process_btn:
     col3.metric("感知耗时", f"{sense_time:.2f} ms")
     col4.metric("加密模式", f"AES-{key_size}-GCM")
 
-    # ==================== 亮点2：批量测试统计 ====================
+    # ==================== 性能评估：批量测试统计 (已运行 ====================
     # 先保存当前结果
     fig_cmp, improvement = render_performance_metrics(
         crypto_time, num_points, num_target, key_size, measurement_mode
@@ -290,7 +313,7 @@ if uploaded_file and process_btn:
     # 如果已有多次运行，展示批量统计
     if len(st.session_state.batch_results) >= 1:
         st.markdown("---")
-        st.subheader(f"📊 亮点2：批量测试统计 (已运行{len(st.session_state.batch_results)}次)")
+        st.subheader(f"📊 性能评估：批量测试统计 (已运行{len(st.session_state.batch_results)}次)")
 
         fig_batch = batch_test_summary(st.session_state.batch_results)
         if fig_batch:
@@ -312,10 +335,10 @@ if uploaded_file and process_btn:
             st.caption(f"**密钥长度对比**：AES-128平均{np.mean(data_128):.1f}%，"
                        f"AES-256平均{np.mean(data_256):.1f}%")
 
-    # ==================== 亮点3：攻击者视角 ====================
+    # ==================== 安全性验证：攻击者视角对比分析====================
     if show_attack_view and len(target_pts) > 0:
         st.markdown("---")
-        st.subheader("🔐 亮点3：安全性验证 - 攻击者视角对比")
+        st.subheader("🔐安全性验证：攻击者视角对比分析")
         st.caption("展示：无密钥攻击者、中间人、授权持有者的数据可见性差异")
         st.pyplot(render_attacker_view(xyz, mask, ciphertext, measurement_mode, demo_seed))
 
