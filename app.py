@@ -58,11 +58,11 @@ st.set_page_config(page_title="车联网隐私保护系统", layout="wide", page
 # ==================== 2. 核心算法逻辑 ====================
 
 def adaptive_detection(xyz):
-    """语义感知引擎"""
-    dist = np.linalg.norm(xyz, axis=1)
-    mask = (dist > 2) & (dist < 25) & \
-           (np.abs(xyz[:, 1]) < 7) & \
-           (xyz[:, 2] > -1.6) & (xyz[:, 2] < 0.5)
+    """语义感知引擎 - 使用你验证过的规则方法"""
+    # 规则：x方向 5-30米，y方向 |y|<6米，高度 -1.5~2.0米
+    mask = (xyz[:, 0] > 5) & (xyz[:, 0] < 30) & \
+           (np.abs(xyz[:, 1]) < 6) & \
+           (xyz[:, 2] > -1.5) & (xyz[:, 2] < 2)
     return mask
 
 
@@ -429,4 +429,5 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True
 )
+
 
