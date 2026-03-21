@@ -5,53 +5,16 @@ import time
 import os
 import urllib.request
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from privacy_system_core import PointPrivacyEngine
+import tempfile
 
 # ==================== 1. 系统环境配置 ====================
 
-# 🔧 终极字体修复：动态下载 Google Noto 中文字体
-import matplotlib.font_manager as fm
-from pathlib import Path
+# 简化字体设置：使用系统默认字体（不下载任何东西）
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
 
-@st.cache_resource
-def setup_chinese_font():
-    """下载并配置中文字体（只执行一次）"""
-    # 创建字体目录
-    font_dir = Path("/tmp/fonts")
-    font_dir.mkdir(exist_ok=True)
-    
-    # Google Noto Sans CJK SC（思源黑体简体）- 开源可商用
-    font_url = "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf"
-    font_path = font_dir / "NotoSansCJKsc-Regular.otf"
-    
-    # 如果字体不存在，下载它（约 16MB）
-    if not font_path.exists():
-        try:
-            with st.spinner("首次运行：下载中文字体..."):
-                urllib.request.urlretrieve(font_url, font_path)
-        except Exception as e:
-            st.warning(f"字体下载失败，使用备用方案: {e}")
-            return None
-    
-    # 注册字体到 matplotlib
-    fm.fontManager.addfont(str(font_path))
-    prop = fm.FontProperties(fname=str(font_path))
-    
-    # 设置为默认字体
-    plt.rcParams['font.family'] = prop.get_name()
-    plt.rcParams['axes.unicode_minus'] = False
-    
-    return prop.get_name()
-
-# 执行字体设置
-font_name = setup_chinese_font()
-
-# 备用：如果下载失败，尝试系统字体
-if font_name is None:
-    plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
-    plt.rcParams['axes.unicode_minus'] = False
-
+# 设置页面配置（只调用一次！）
 st.set_page_config(page_title="车联网隐私保护系统", layout="wide", page_icon="🛡️")
 
 
@@ -104,7 +67,7 @@ def secure_encryption_engine(target_points, key_size, measurement_mode="真实�
 # ==================== 3. 可视化组件 ====================
 
 def render_triple_comparison(xyz, mask, recovered_pts, measurement_mode="真实测量", demo_seed=42):
-    """三位一体可视化（matplotlib - 点云图保持静态）"""
+    """三位一体可视化"""
     if measurement_mode == "稳定展示":
         np.random.seed(demo_seed)
 
@@ -139,8 +102,8 @@ def render_triple_comparison(xyz, mask, recovered_pts, measurement_mode="真实�
     return fig
 
 
-def render_performance_metrics_plotly(sel_time, total_pts, target_pts, key_size, measurement_mode="真实测量"):
-    """效率对比交互式图表（Plotly）"""
+def render_performance_metrics(sel_time, total_pts, target_pts, key_size, measurement_mode="真实测量"):
+    """效率对比柱状图"""
     ratio = total_pts / max(target_pts, 1)
 
     if measurement_mode == "稳定展示":
@@ -152,43 +115,29 @@ def render_performance_metrics_plotly(sel_time, total_pts, target_pts, key_size,
         full_time = full_time_base + np.random.uniform(-0.3, 0.3)
 
     visual_sel = max(sel_time, full_time * 0.08)
-    improvement = (1 - sel_time / full_time) * 100
 
-    fig = go.Figure(data=[
-        go.Bar(
-            name='选择性加密', 
-            x=['加密方式'], 
-            y=[visual_sel],
-            text=f'{sel_time:.4f} ms',
-            textposition='outside',
-            marker_color='#2ecc71',
-            hovertemplate='选择性加密<br>耗时: %{y:.4f} ms<extra></extra>'
-        ),
-        go.Bar(
-            name='全量加密', 
-            x=['加密方式'], 
-            y=[full_time],
-            text=f'{full_time:.2f} ms',
-            textposition='outside',
-            marker_color='#e74c3c',
-            hovertemplate='全量加密<br>耗时: %{y:.2f} ms<extra></extra>'
-        )
-    ])
-    
-    fig.update_layout(
-        title=f'AES-{key_size} 效率提升: {improvement:.1f}%',
-        yaxis_title='耗时 (ms)',
-        barmode='group',
-        height=500,
-        showlegend=True,
-        hovermode='x unified'
-    )
-    
+    fig, ax = plt.subplots(figsize=(10, 5))
+    labels = ['选择性加密', '全量加密']
+    vals = [visual_sel, full_time]
+
+    colors = ['#2ecc71', '#e74c3c']
+    bars = ax.bar(labels, vals, color=colors, width=0.4, edgecolor='black', linewidth=1.2)
+
+    ax.text(0, visual_sel, f'{sel_time:.4f} ms', ha='center', va='bottom',
+            fontsize=12, fontweight='bold', color='green')
+    ax.text(1, full_time, f'{full_time:.2f} ms', ha='center', va='bottom',
+            fontsize=12, fontweight='bold', color='red')
+
+    improvement = (1 - sel_time / full_time) * 100
+    ax.set_title(f"AES-{key_size} 效率提升: {improvement:.1f}%", fontsize=14)
+    ax.set_ylabel("耗时 (ms)")
+    ax.grid(axis='y', linestyle='--', alpha=0.6)
+
     return fig, improvement
 
 
 def render_attacker_view(xyz, mask, ciphertext, measurement_mode="真实测量", demo_seed=42):
-    """攻击者视角对比（matplotlib - 保持静态）"""
+    """攻击者视角对比"""
     if measurement_mode == "稳定展示":
         np.random.seed(demo_seed)
 
@@ -231,64 +180,40 @@ def render_attacker_view(xyz, mask, ciphertext, measurement_mode="真实测量",
     return fig
 
 
-def batch_test_summary_plotly(results_list):
-    """批量测试交互式统计（Plotly）"""
+def batch_test_summary(results_list):
+    """批量测试结果统计"""
     if not results_list:
         return None
 
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
     improvements = [r['improvement'] for r in results_list]
     key_sizes = [r['key_size'] for r in results_list]
+
     colors = ['#2ecc71' if k == 128 else '#3498db' for k in key_sizes]
-    
-    fig = make_subplots(
-        rows=1, cols=2,
-        subplot_titles=('效率提升趋势', '密钥长度分布'),
-        specs=[[{"type": "scatter"}, {"type": "box"}]]
-    )
-    
-    # 左图：柱状图 + 平均线
-    fig.add_trace(
-        go.Bar(
-            x=list(range(len(improvements))),
-            y=improvements,
-            marker_color=colors,
-            name='效率提升',
-            hovertemplate='测试 #%<br>提升: %{y:.1f}%<extra></extra>'
-        ),
-        row=1, col=1
-    )
-    
-    avg_val = np.mean(improvements)
-    fig.add_hline(
-        y=avg_val, 
-        line_dash="dash", 
-        line_color="red",
-        annotation_text=f'平均: {avg_val:.1f}%',
-        row=1, col=1
-    )
-    
-    # 右图：箱线图
+    axes[0].bar(range(len(improvements)), improvements, color=colors, edgecolor='black')
+    axes[0].axhline(y=np.mean(improvements), color='red', linestyle='--',
+                    label=f'平均: {np.mean(improvements):.1f}%')
+    axes[0].set_xlabel('测试样本序号')
+    axes[0].set_ylabel('效率提升 (%)')
+    axes[0].set_title('批量测试：效率提升稳定性', fontsize=14, fontweight='bold')
+    axes[0].legend()
+    axes[0].grid(axis='y', alpha=0.3)
+
     data_128 = [r['improvement'] for r in results_list if r['key_size'] == 128]
     data_256 = [r['improvement'] for r in results_list if r['key_size'] == 256]
-    
+
     if data_128 and data_256:
-        fig.add_trace(
-            go.Box(y=data_128, name='AES-128', marker_color='#2ecc71'),
-            row=1, col=2
-        )
-        fig.add_trace(
-            go.Box(y=data_256, name='AES-256', marker_color='#3498db'),
-            row=1, col=2
-        )
-    
-    fig.update_layout(
-        height=450,
-        showlegend=False,
-        title_text=f'批量测试统计 (n={len(results_list)})'
-    )
-    
+        axes[1].boxplot([data_128, data_256], labels=['AES-128', 'AES-256'])
+        axes[1].set_ylabel('效率提升 (%)')
+        axes[1].set_title('密钥长度对比', fontsize=14, fontweight='bold')
+        axes[1].grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
     return fig
 
+
+# ... 前面的导入和函数定义不变 ...
 
 # ==================== 4. 主程序 ====================
 
@@ -319,24 +244,51 @@ with st.sidebar:
         st.session_state.batch_results = []
         st.rerun()
 
+# ==================== 主处理区域（不在侧边栏里）====================
+
 if uploaded_file and process_btn:
     st.cache_data.clear()
 
-    content = uploaded_file.read()
-    points = np.frombuffer(content, dtype=np.float32).reshape(-1, 4)
+    # 1. 保存上传的文件
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_path = tmp_file.name
+
+    # 2. 读取点云用于显示
+    points = np.frombuffer(uploaded_file.getvalue(), dtype=np.float32).reshape(-1, 4)
     xyz = points[:, :3]
     num_points = len(xyz)
 
+    # 3. 调用真实模型
+    if 'engine' not in st.session_state:
+        with st.spinner("首次运行，正在加载模型（约10秒）..."):
+            st.session_state.engine = PointPrivacyEngine()
+    engine = st.session_state.engine
+    result = engine.protect_frame(tmp_path)
+
+    # 4. 获取模型结果
+    mask = result.get("mask", np.zeros(num_points, dtype=bool))
+
+    # 5. 如果模型失败，回退到规则方法
+    if not np.any(mask):
+        mask = adaptive_detection(xyz)
+
+    # 6. 清理临时文件
+    os.unlink(tmp_path)
+
+    # 7. 设置随机种子（用于稳定展示模式）
     if measurement_mode == "稳定展示":
         np.random.seed(int(demo_seed))
 
+    # 8. 记录感知耗时
     t_start = time.perf_counter()
-    mask = adaptive_detection(xyz)
-    sense_time = (time.perf_counter() - t_start) * 1000
+    sense_time = result.get('inference_time', (time.perf_counter() - t_start) * 1000)
 
+    # 9. 统计目标点数
     num_target = np.sum(mask)
     num_background = num_points - num_target
 
+    # 10. 加密
     target_pts = xyz[mask]
     if len(target_pts) > 0:
         recovered_pts, crypto_time, ciphertext = secure_encryption_engine(
@@ -357,8 +309,7 @@ if uploaded_file and process_btn:
     col4.metric("加密模式", f"AES-{key_size}-GCM")
 
     # ==================== 性能评估：批量测试统计 ====================
-    # 先保存当前结果
-    fig_cmp, improvement = render_performance_metrics_plotly(
+    fig_cmp, improvement = render_performance_metrics(
         crypto_time, num_points, num_target, key_size, measurement_mode
     )
 
@@ -375,9 +326,9 @@ if uploaded_file and process_btn:
         st.markdown("---")
         st.subheader(f"📊 性能评估：批量测试统计 (已运行{len(st.session_state.batch_results)}次)")
 
-        fig_batch = batch_test_summary_plotly(st.session_state.batch_results)
+        fig_batch = batch_test_summary(st.session_state.batch_results)
         if fig_batch:
-            st.plotly_chart(fig_batch, use_container_width=True)
+            st.pyplot(fig_batch)
 
         results = st.session_state.batch_results
         avg_imp = np.mean([r['improvement'] for r in results])
@@ -395,10 +346,10 @@ if uploaded_file and process_btn:
             st.caption(f"**密钥长度对比**：AES-128平均{np.mean(data_128):.1f}%，"
                        f"AES-256平均{np.mean(data_256):.1f}%")
 
-    # ==================== 安全性验证：攻击者视角对比 ====================
+    # ==================== 安全性验证：攻击者视角对比分析 ====================
     if show_attack_view and len(target_pts) > 0:
         st.markdown("---")
-        st.subheader("🔐 安全性验证：攻击者视角对比")
+        st.subheader("🔐安全性验证：攻击者视角对比分析")
         st.caption("展示：无密钥攻击者、中间人、授权持有者的数据可见性差异")
         st.pyplot(render_attacker_view(xyz, mask, ciphertext, measurement_mode, demo_seed))
 
@@ -409,10 +360,10 @@ if uploaded_file and process_btn:
         - **授权持有者**：持有正确密钥，可无损还原原始点云数据
         """)
 
-    # 效率对比图（Plotly 交互式）
+    # 效率对比图（放在最后作为补充）
     st.markdown("---")
     st.subheader("📈 效率对比分析")
-    st.plotly_chart(fig_cmp, use_container_width=True)
+    st.pyplot(fig_cmp)
 
     if measurement_mode == "稳定展示":
         st.success(f"【稳定展示】AES-{key_size} 效率提升: {improvement:.1f}%")
@@ -429,5 +380,3 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True
 )
-
-
