@@ -7,6 +7,30 @@ from scipy.spatial import cKDTree
 from network.RandLANet import Network as RandLANet
 
 #privacy_system_core.py
+
+import urllib.request
+
+
+def download_weight(weight_path="pretrain_model/checkpoint.tar"):
+    """从 GitHub Release 下载预训练权重"""
+    if os.path.exists(weight_path):
+        print(f"✅ 权重文件已存在: {weight_path}")
+        return True
+
+    # 创建文件夹
+    os.makedirs(os.path.dirname(weight_path), exist_ok=True)
+
+    # 下载链接
+    url = "https://github.com/atori777/myproject/releases/download/V1.0/checkpoint.tar"
+
+    print(f"正在下载预训练权重...")
+    try:
+        urllib.request.urlretrieve(url, weight_path)
+        print(f"✅ 权重下载完成: {weight_path}")
+        return True
+    except Exception as e:
+        print(f"❌ 权重下载失败: {e}")
+        return False
 # 简单的配置类，用于初始化模型
 class Config:
     def __init__(self):
@@ -33,6 +57,7 @@ class PointPrivacyEngine:
         self.model = RandLANet(config)
         self.model = self.model.to(self.device)
 
+        download_weight(pretrain_path) #下载权重
         # 加载预训练权重
         if os.path.exists(pretrain_path):
             checkpoint = torch.load(pretrain_path, map_location=self.device)
