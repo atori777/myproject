@@ -95,7 +95,10 @@ class PointPrivacyEngine:
         with torch.no_grad():
             t_start = time.time()
             # 转成模型需要的格式: (1, 3, N)
-            input_dict = {'features': input_tensor.transpose(1, 2)}
+            input_dict = {
+    'features': input_tensor.transpose(1, 2),  # (1, C, N)
+    'xyz': input_tensor  # (1, N, 3) 原始坐标
+}
             logits = self.model(input_dict)
             sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
             t_inference = time.time() - t_start
