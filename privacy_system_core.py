@@ -92,16 +92,28 @@ class PointPrivacyEngine:
         input_points = original_xyz[indices, :]
         input_tensor = torch.from_numpy(input_points).unsqueeze(0).to(self.device)  # (1, N, 3)
 
-        with torch.no_grad():
-            t_start = time.time()
-            # 转成模型需要的格式: (1, 3, N)
-            input_dict = {
-    'features': input_tensor.transpose(1, 2),  # (1, C, N)
-    'xyz': input_tensor  # (1, N, 3) 原始坐标
-}
-            logits = self.model(input_dict)
-            sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
-            t_inference = time.time() - t_start
+       with torch.no_grad():
+    t_start = time.time()
+    
+    # 1. 计算最近邻索引
+    from scipy.spatial import cKDTree
+    xyz_np = input_tensor.squeeze(0).cpu().numpy()  # (N, 3)
+    tree = cKDTree(xyz_np)
+    _, neigh_idx = tree.query(xyz_np, k=17)  # 查17个，包含自身
+    neigh_idx = neigh_idx[:, 1:]  # 去掉自身，取16个邻居
+    neigh_idx_tensor = torch.from_numpy(neigh_idx).unsqueeze(0).to(self.device)
+    
+    # 2. 构建输入字典
+    input_dict = {
+        'features': input_tensor.transpose(1, 2),  # (1, 3, N)
+        'xyz': input_tensor,                       # (1, N, 3)
+        'neigh_idx': neigh_idx_tensor              # (1, N, 16)
+    }
+    
+    # 3. 推理
+    logits = self.model(input_dict)
+    sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
+    t_inference = time.time() - t_start
 
         # C. 上采样
         full_labels = self._up_sample_labels(original_xyz, input_points, sampled_preds)
