@@ -87,36 +87,32 @@ class PointPrivacyEngine:
         raw_data = np.fromfile(bin_path, dtype=np.float32).reshape(-1, 4)
         original_xyz = raw_data[:, :3]
 
-        # B. 随机采样保证覆盖面 (解决索引靠前全无点的问题)
+        # B. 随机采样
         indices = np.random.choice(len(original_xyz), min(65536, len(original_xyz)), replace=False)
         input_points = original_xyz[indices, :]
-        input_tensor = torch.from_numpy(input_points).unsqueeze(0).to(self.device)
+        input_tensor = torch.from_numpy(input_points).unsqueeze(0).to(self.device)  # (1, N, 3)
 
         with torch.no_grad():
-    t_start = time.time()
-    # 模型期望的输入格式是 {'features': tensor}
-    end_points = {'features': input_tensor.transpose(1, 2)}  # 转成 (B, C, N)
-    logits = self.model(end_points)
-    sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
-    t_inference = time.time() - t_start
-    
+            t_start = time.time()
+            # 转成模型需要的格式: (1, 3, N)
+            input_dict = {'features': input_tensor.transpose(1, 2)}
+            logits = self.model(input_dict)
+            sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
+            t_inference = time.time() - t_start
 
-        # C. 核心：自适应隐私识别逻辑
+        # C. 上采样
         full_labels = self._up_sample_labels(original_xyz, input_points, sampled_preds)
         mask = np.isin(full_labels, self.privacy_labels)
 
-        # --- 重点：如果模型未加载权重导致识别为0，启动几何启发式保护 ---
+        # D. 如果模型失败，回退到规则方法
         if np.sum(mask) == 0:
-            # 模拟在道路中央区域（KITTI坐标系中车辆通常在 5m-15m 范围内）
             dist = np.linalg.norm(original_xyz, axis=1)
-            # 过滤高度：-1.5m 到 0.5m 通常是车辆点
             mask = (dist > 3) & (dist < 20) & (original_xyz[:, 2] > -1.6) & (original_xyz[:, 2] < 0.2)
-        # --------------------------------------------------------
 
         target_points = original_xyz[mask]
         background_points = original_xyz[~mask]
 
-        # D. AES-GCM 加密
+        # E. AES-GCM加密
         nonce = os.urandom(12)
         if len(target_points) > 0:
             ciphertext = self.aesgcm.encrypt(nonce, target_points.tobytes(), None)
@@ -129,9 +125,9 @@ class PointPrivacyEngine:
             "ciphertext": ciphertext,
             "background": background_points,
             "target_count": len(target_points),
-            "target_shape": target_points.shape if len(target_points) > 0 else None
+            "target_shape": target_points.shape if len(target_points) > 0 else None,
+            "mask": mask
         }
-
     def authorize_recovery(self, packet):
         if packet["ciphertext"] is None: return packet["background"]
         decrypted_data = self.aesgcm.decrypt(packet["nonce"], packet["ciphertext"], None)
