@@ -93,10 +93,13 @@ class PointPrivacyEngine:
         input_tensor = torch.from_numpy(input_points).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            t_start = time.time()
-            logits = self.model(input_tensor)
-            sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
-            t_inference = time.time() - t_start
+    t_start = time.time()
+    # 模型期望的输入格式是 {'features': tensor}
+    end_points = {'features': input_tensor.transpose(1, 2)}  # 转成 (B, C, N)
+    logits = self.model(end_points)
+    sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
+    t_inference = time.time() - t_start
+    
 
         # C. 核心：自适应隐私识别逻辑
         full_labels = self._up_sample_labels(original_xyz, input_points, sampled_preds)
