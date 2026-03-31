@@ -213,7 +213,7 @@ def batch_test_summary(results_list):
     return fig
 
 
-# ... 前面的导入和函数定义不变 ...
+
 
 # ==================== 4. 主程序 ====================
 
@@ -254,10 +254,12 @@ if uploaded_file and process_btn:
         tmp_file.write(uploaded_file.getvalue())
         tmp_path = tmp_file.name
 
-    # 2. 读取点云用于显示
-    points = np.frombuffer(uploaded_file.getvalue(), dtype=np.float32).reshape(-1, 4)
+     # 2. 读取点云用于显示
+    data_bytes = uploaded_file.getvalue()
+    points = np.frombuffer(data_bytes, dtype=np.float32).reshape(-1, 4)
     xyz = points[:, :3]
     num_points = len(xyz)
+
 
     # 3. 调用真实模型
     if 'engine' not in st.session_state:
