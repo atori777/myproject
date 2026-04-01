@@ -134,13 +134,13 @@ class PointPrivacyEngine:
                 current_xyz = sub_xyz
 
             # 组装 input_dict
-            input_dict = {
-                'xyz': all_xyz,
-                'neigh_idx': all_neigh_idx,
-                'sub_idx': all_sub_idx,
-                'interp_idx': all_interp_idx,
-                'features': all_xyz[0].permute(0, 2, 1).contiguous() # (1, 3, N)
-            }
+           input_dict = {
+    'xyz': all_xyz,
+    'neigh_idx': all_neigh_idx,
+    'sub_idx': all_sub_idx,
+    'interp_idx': all_interp_idx,
+    'features': all_xyz[0].transpose(1, 2).contiguous()  # (1, N, 3) -> (1, 3, N)
+}
             # --- 核心修复结束 ---
 
             try:
