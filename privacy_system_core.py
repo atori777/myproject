@@ -92,29 +92,44 @@ class PointPrivacyEngine:
         input_points = original_xyz[indices, :]
         input_tensor = torch.from_numpy(input_points).unsqueeze(0).to(self.device)  # (1, N, 3)
 
-        with torch.no_grad():
+       with torch.no_grad():
             t_start = time.time()
 
-            # 1. 计算最近邻索引
-            from scipy.spatial import cKDTree
-            xyz_np = input_tensor.squeeze(0).cpu().numpy()
-            tree = cKDTree(xyz_np)
-            _, neigh_idx = tree.query(xyz_np, k=17)
-            neigh_idx = neigh_idx[:, 1:]
-            neigh_idx_tensor = torch.from_numpy(neigh_idx).unsqueeze(0).to(self.device)
+            # 1. 准备多层下采样数据 (RandLA-Net 需要 4 层)
+            # 我们在 Python 层模拟这个过程
+            current_xyz = input_points
+            all_xyz = []
+            all_neigh_idx = []
+            
+            # 这里的下采样倍率要对应模型设定 (通常是每层 4 倍)
+            sub_sample_ratio = [1, 4, 4, 4] 
+            
+            for i in range(4):
+                # 计算当前层的点数
+                curr_n = len(current_xyz) // sub_sample_ratio[i]
+                if curr_n < 1024: curr_n = 1024 # 保证最少点数
+                
+                # 随机采样
+                idx = np.random.choice(len(current_xyz), curr_n, replace=False)
+                current_xyz = current_xyz[idx]
+                
+                # 计算最近邻 (k=16，对应模型参数)
+                tree = cKDTree(current_xyz)
+                _, neigh_idx = tree.query(current_xyz, k=16)
+                
+                # 转换为 Tensor 并增加 Batch 维度 (1, N, ...)
+                all_xyz.append(torch.from_numpy(current_xyz).float().unsqueeze(0).to(self.device))
+                all_neigh_idx.append(torch.from_numpy(neigh_idx).long().unsqueeze(0).to(self.device))
 
-            # 2. 构建输入字典
+            # 2. 构建符合模型预期的输入字典
             input_dict = {
-                'features': input_tensor.transpose(1, 2),
-                'xyz': input_tensor,
-                'neigh_idx': neigh_idx_tensor
+                'xyz': all_xyz,                # 这是一个包含 4 个 Tensor 的列表
+                'neigh_idx': all_neigh_idx,    # 这是一个包含 4 个 Tensor 的列表
+                'features': all_xyz[0].transpose(1, 2) # 初始特征，形状为 (1, 3, N)
             }
 
             # 3. 推理
             logits = self.model(input_dict)
-            sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
-            t_inference = time.time() - t_start
-
         # C. 上采样
         full_labels = self._up_sample_labels(original_xyz, input_points, sampled_preds)
         mask = np.isin(full_labels, self.privacy_labels)
