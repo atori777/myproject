@@ -95,47 +95,54 @@ class PointPrivacyEngine:
       with torch.no_grad():
             t_start = time.time()
 
-            # 1. 模拟 RandLA-Net 的 4 层下采样 (必须严格符合模型维度)
-            current_xyz = input_points
+            # 1. 模拟 4 层下采样，且严格转换数据类型
+            current_xyz = input_points.astype(np.float32) # 强制转为 float32
             all_xyz = []
             all_neigh_idx = []
-            
-            # 每一层的下采样倍率 (第一层不采样)
             sub_sample_ratio = [1, 4, 4, 4] 
-            
+
             for i in range(4):
-                # 计算目标点数
                 target_n = len(current_xyz) // sub_sample_ratio[i]
-                if target_n < 512: target_n = 512 # 保护底线
+                if target_n < 512: target_n = 512
                 
                 # 随机采样
                 idx = np.random.choice(len(current_xyz), target_n, replace=False)
                 current_xyz = current_xyz[idx]
                 
-                # 计算当前层的 KNN (k=16)
+                # 计算 KNN
                 tree = cKDTree(current_xyz)
                 _, neigh_idx = tree.query(current_xyz, k=16)
                 
-                # --- 关键修改：转换为 Tensor 并强制增加 Batch 维度 (1, N, ...) ---
-                # 使用 .float() 确保是 float32，.long() 确保索引是整数
-                xyz_tensor = torch.from_numpy(current_xyz).float().unsqueeze(0).to(self.device)
-                neigh_tensor = torch.from_numpy(neigh_idx).long().unsqueeze(0).to(self.device)
+                # --- 核心修复：强制转为 float32 和 long，并检查维度 ---
+                xyz_tensor = torch.from_numpy(current_xyz).float().to(self.device) # (N, 3)
+                neigh_tensor = torch.from_numpy(neigh_idx).long().to(self.device)  # (N, 16)
                 
-                all_xyz.append(xyz_tensor)
-                all_neigh_idx.append(neigh_tensor)
+                # 必须在这里就增加 Batch 维度，确保变成 (1, N, 3)
+                all_xyz.append(xyz_tensor.unsqueeze(0))
+                all_neigh_idx.append(neigh_tensor.unsqueeze(0))
 
-            # 2. 组装输入字典 (必须和 RandLANet.py 的 forward 预期一致)
+            # 2. 组装输入字典
+            # 注意：features 必须是 (1, d_in, N)，这里 d_in 是 3 (xyz)
             input_dict = {
-                'xyz': all_xyz,                # 4层 [1, N_i, 3] 的列表
-                'neigh_idx': all_neigh_idx,    # 4层 [1, N_i, 16] 的列表
-                'features': all_xyz[0].transpose(1, 2) # 特征输入应为 [1, 3, N]
+                'xyz': all_xyz,
+                'neigh_idx': all_neigh_idx,
+                'features': all_xyz[0].permute(0, 2, 1).contiguous() # 将 (1, N, 3) 变为 (1, 3, N)
             }
 
-            # 3. 推理
-            logits = self.model(input_dict)
-            # 得到结果 [1, classes, N] -> [N]
-            sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
+            # 3. 推理并捕捉潜在异常
+            try:
+                logits = self.model(input_dict)
+                # logits 形状通常是 (1, num_classes, N)
+                sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
+            except Exception as e:
+                print(f"❌ 模型推理内部错误: {e}")
+                # 最后的保底：如果模型碎了，给一堆全为 0 的标签保证后面不报错
+                sampled_preds = np.zeros(len(input_points), dtype=np.int32)
+
             t_inference = time.time() - t_start
+        # C. 上采样
+        full_labels = self._up_sample_labels(original_xyz, input_points, sampled_preds)
+        mask = np.isin(full_labels, self.privacy_labels)
 
         # D. 如果模型失败，回退到规则方法
         if np.sum(mask) == 0:
