@@ -92,47 +92,50 @@ class PointPrivacyEngine:
         input_points = original_xyz[indices, :]
         input_tensor = torch.from_numpy(input_points).unsqueeze(0).to(self.device)  # (1, N, 3)
 
-       with torch.no_grad():
+      with torch.no_grad():
             t_start = time.time()
 
-            # 1. 准备多层下采样数据 (RandLA-Net 需要 4 层)
-            # 我们在 Python 层模拟这个过程
+            # 1. 模拟 RandLA-Net 的 4 层下采样 (必须严格符合模型维度)
             current_xyz = input_points
             all_xyz = []
             all_neigh_idx = []
             
-            # 这里的下采样倍率要对应模型设定 (通常是每层 4 倍)
+            # 每一层的下采样倍率 (第一层不采样)
             sub_sample_ratio = [1, 4, 4, 4] 
             
             for i in range(4):
-                # 计算当前层的点数
-                curr_n = len(current_xyz) // sub_sample_ratio[i]
-                if curr_n < 1024: curr_n = 1024 # 保证最少点数
+                # 计算目标点数
+                target_n = len(current_xyz) // sub_sample_ratio[i]
+                if target_n < 512: target_n = 512 # 保护底线
                 
                 # 随机采样
-                idx = np.random.choice(len(current_xyz), curr_n, replace=False)
+                idx = np.random.choice(len(current_xyz), target_n, replace=False)
                 current_xyz = current_xyz[idx]
                 
-                # 计算最近邻 (k=16，对应模型参数)
+                # 计算当前层的 KNN (k=16)
                 tree = cKDTree(current_xyz)
                 _, neigh_idx = tree.query(current_xyz, k=16)
                 
-                # 转换为 Tensor 并增加 Batch 维度 (1, N, ...)
-                all_xyz.append(torch.from_numpy(current_xyz).float().unsqueeze(0).to(self.device))
-                all_neigh_idx.append(torch.from_numpy(neigh_idx).long().unsqueeze(0).to(self.device))
+                # --- 关键修改：转换为 Tensor 并强制增加 Batch 维度 (1, N, ...) ---
+                # 使用 .float() 确保是 float32，.long() 确保索引是整数
+                xyz_tensor = torch.from_numpy(current_xyz).float().unsqueeze(0).to(self.device)
+                neigh_tensor = torch.from_numpy(neigh_idx).long().unsqueeze(0).to(self.device)
+                
+                all_xyz.append(xyz_tensor)
+                all_neigh_idx.append(neigh_tensor)
 
-            # 2. 构建符合模型预期的输入字典
+            # 2. 组装输入字典 (必须和 RandLANet.py 的 forward 预期一致)
             input_dict = {
-                'xyz': all_xyz,                # 这是一个包含 4 个 Tensor 的列表
-                'neigh_idx': all_neigh_idx,    # 这是一个包含 4 个 Tensor 的列表
-                'features': all_xyz[0].transpose(1, 2) # 初始特征，形状为 (1, 3, N)
+                'xyz': all_xyz,                # 4层 [1, N_i, 3] 的列表
+                'neigh_idx': all_neigh_idx,    # 4层 [1, N_i, 16] 的列表
+                'features': all_xyz[0].transpose(1, 2) # 特征输入应为 [1, 3, N]
             }
 
             # 3. 推理
             logits = self.model(input_dict)
-        # C. 上采样
-        full_labels = self._up_sample_labels(original_xyz, input_points, sampled_preds)
-        mask = np.isin(full_labels, self.privacy_labels)
+            # 得到结果 [1, classes, N] -> [N]
+            sampled_preds = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
+            t_inference = time.time() - t_start
 
         # D. 如果模型失败，回退到规则方法
         if np.sum(mask) == 0:
