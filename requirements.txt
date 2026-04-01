@@ -1,0 +1,17 @@
+# --- 1. 基础科学计算 ---
+numpy>=1.18.1
+pandas>=1.0.3
+scipy>=1.5.0       #替代 C++ KNN 算子
+PyYAML>=5.1.1      # 读取配置文件
+
+# --- 2. 深度学习 (RandLA-Net核心) ---
+torch>=1.4.0
+torchvision
+tensorboard>=2.2.0
+tqdm>=4.45.0
+scikit-learn>=0.22.2
+
+# --- 3. 网页展示与可视化 (Streamlit核心) ---
+streamlit          # 网页框架
+matplotlib>=2.2.3  # 用于 app.py 绘图
+cryptography       # 用于 AES-GCM 加密功能
