@@ -81,6 +81,32 @@ def normalize_velodyne_input(raw: str):
     return os.path.normpath(s), None
 
 
+def diagnose_velodyne_folder(folder: str, single_bin_hint) -> str:
+    """给用户看的路径诊断（本地 vs 云端、目录是否存在）。"""
+    lines = [f"**解析到的 velodyne 文件夹**：`{folder}`"]
+    if not folder:
+        return ""
+    if os.path.isdir(folder):
+        try:
+            n_bin = sum(1 for f in os.listdir(folder) if f.lower().endswith(".bin"))
+            lines.append(f"**该文件夹存在**，其中 `.bin` 数量：**{n_bin}**")
+        except OSError as e:
+            lines.append(f"**无法读取该文件夹**：{e}")
+    else:
+        lines.append("**该文件夹在当前运行环境中不存在**。")
+        lines.append(
+            "若你在 **Streamlit 云端** 运行：服务器没有本机的 `D:\\`，请把数据放进仓库相对路径（如 `datasets/.../velodyne`）"
+            " 或在**本机** `streamlit run app.py`。"
+        )
+    if single_bin_hint:
+        ok = os.path.isfile(single_bin_hint)
+        lines.append(
+            f"你填写的是**单文件路径**，已自动用其父目录扫描；该文件是否存在：**{'是' if ok else '否'}**"
+            f"（`{single_bin_hint}`）"
+        )
+    return "\n\n".join(lines)
+
+
 # ==================== 业务逻辑 ====================
 
 def adaptive_detection(xyz):
@@ -588,10 +614,11 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("##### 2. 数据")
     velodyne_dir = st.text_input(
-        "velodyne 文件夹路径（用于抽取点云）",
+        "velodyne 文件夹或某个 .bin 完整路径",
         value="",
-        placeholder="例：datasets/semantic_kitti/sequences/00/velodyne",
-        help="填入 velodyne 文件夹路径，点击「执行处理」后自动完成：① 随机抽 1 帧 × 100 次加密（稳定性）② 随机抽 100 帧各 1 次（泛化性）。",
+        placeholder="文件夹：.../velodyne  或  单文件：.../velodyne/000009.bin",
+        help="填文件夹或某一帧 .bin 均可（会自动用父目录扫 *.bin）。"
+        " 注意：Streamlit 云端没有本机 D 盘，需用仓库内相对路径或本机 streamlit run。",
     )
 
     st.markdown("---")
@@ -620,7 +647,12 @@ if process_btn:
         pattern = os.path.join(cross_folder, "*.bin")
         all_bins = sorted(glob.glob(pattern))
         if len(all_bins) < 1:
-            st.error(f"在文件夹中未找到任何 `.bin` 文件：\n`{cross_folder}`")
+            st.error(
+                "在解析出的 velodyne 文件夹里**没有找到任何** `.bin` 文件。\n\n"
+                + diagnose_velodyne_folder(cross_folder, velodyne_single_bin)
+                + "\n\n**常见原因**：① 云端跑应用时本机 `D:\\` 路径无效；② 序列未下载（如 `sequences/03/velodyne` 为空）；"
+                "③ 数据集目录层级不同（有的是 `semantic_kitti/sequences/03/velodyne`，没有 `dataset` 这一层）。"
+            )
         elif len(all_bins) < 2:
             st.error(f"文件夹中只有 1 个 `.bin`，需要至少 2 个（1 帧做单帧演示 + 至少 1 帧跑跨帧测时）。")
         else:
