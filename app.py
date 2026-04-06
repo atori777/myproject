@@ -272,10 +272,16 @@ def render_four_algo_bars(means_ms, stds_ms, include_full=True):
     ax.set_xticks(x)
     ax.set_xticklabels(names, fontsize=10)
     ax.set_ylabel(_lbl("Mean time (ms)", "平均耗时 (ms)"))
-    ax.set_title(
-        _lbl("Selective algorithms: mean time (100 runs)", "选择性算法：100 次平均加密耗时"),
-        fontsize=13,
-    )
+    if include_full:
+        ax.set_title(
+            _lbl("Four schemes: mean time (100 runs)", "四方案：100 次平均加密耗时"),
+            fontsize=13,
+        )
+    else:
+        ax.set_title(
+            _lbl("Selective only: mean time (100 runs)", "仅选择性：100 次平均加密耗时"),
+            fontsize=13,
+        )
     ax.grid(axis="y", linestyle="--", alpha=0.5)
     plt.tight_layout()
     return fig
@@ -318,6 +324,7 @@ def run_cross_frame_benchmark(
     cha = ChaCha20Poly1305(key32)
 
     out = {
+        "full_aes_gcm_ms": [],
         "sel_aes_gcm_ms": [],
         "sel_chacha_ms": [],
         "sel_cbc_ms": [],
@@ -333,6 +340,7 @@ def run_cross_frame_benchmark(
             n_tgt = int(n_pts * rng.uniform(0.08, 0.18))
             t_full = base_sel * (n_pts / 1e6) * 1000 * gcm_s
             t_sel = base_sel * (n_tgt / 1e6) * 1000 * gcm_s
+            out["full_aes_gcm_ms"].append(max(0.01, t_full + rng.normal(0, t_full * 0.04)))
             out["sel_aes_gcm_ms"].append(max(0.01, t_sel + rng.normal(0, t_sel * 0.04)))
             out["sel_chacha_ms"].append(max(0.01, t_sel * 1.1 + rng.normal(0, t_sel * 0.05)))
             out["sel_cbc_ms"].append(max(0.01, t_sel * 1.35 + rng.normal(0, t_sel * 0.06)))
@@ -359,6 +367,10 @@ def run_cross_frame_benchmark(
         full_plain = xyz_f.astype(np.float32).tobytes()
 
         t0 = time.perf_counter()
+        gcm.encrypt(os.urandom(12), full_plain, None)
+        out["full_aes_gcm_ms"].append((time.perf_counter() - t0) * 1000)
+
+        t0 = time.perf_counter()
         gcm.encrypt(os.urandom(12), sel_plain, None)
         out["sel_aes_gcm_ms"].append((time.perf_counter() - t0) * 1000)
 
@@ -382,6 +394,10 @@ def render_cross_frame_lines(cross, n_show=100):
     xs = np.arange(1, n + 1)
     fig, axes = plt.subplots(2, 1, figsize=(13, 8), sharex=True)
 
+    full_ms = cross.get("full_aes_gcm_ms") or []
+    if len(full_ms) >= n:
+        axes[0].plot(xs, full_ms[:n], label=_lbl("Full AES-GCM", "全量 AES-GCM"),
+                     alpha=0.85, linewidth=1.0)
     axes[0].plot(xs, cross["sel_aes_gcm_ms"][:n], label=_lbl("Sel. AES-GCM", "选择性 AES-GCM"),
                  alpha=0.85, linewidth=1.0)
     axes[0].plot(xs, cross["sel_chacha_ms"][:n], label=_lbl("Sel. ChaCha20", "选择性 ChaCha20"),
@@ -624,11 +640,13 @@ if uploaded_file and process_btn:
             cross_bench = run_cross_frame_benchmark(cross_dir, key_size, n_frames=100,
                                                      measurement_mode=measurement_mode, demo_seed=demo_seed)
             cross_means = [
+                float(np.mean(cross_bench["full_aes_gcm_ms"])),
                 float(np.mean(cross_bench["sel_aes_gcm_ms"])),
                 float(np.mean(cross_bench["sel_chacha_ms"])),
                 float(np.mean(cross_bench["sel_cbc_ms"])),
             ]
             cross_stds = [
+                float(np.std(cross_bench["full_aes_gcm_ms"])),
                 float(np.std(cross_bench["sel_aes_gcm_ms"])),
                 float(np.std(cross_bench["sel_chacha_ms"])),
                 float(np.std(cross_bench["sel_cbc_ms"])),
@@ -771,10 +789,14 @@ else:
                 " 上图是耗时折线，下图是各帧隐私目标点数（≈ 8-18% 总点数）。"
             )
             st.pyplot(render_cross_frame_lines(cross, 100))
-            cc1, cc2, cc3 = st.columns(3)
-            cc1.metric("跨帧选择性 AES-GCM 均值", f"{np.mean(cross['sel_aes_gcm_ms']):.3f} ms")
-            cc2.metric("跨帧 ChaCha20 均值", f"{np.mean(cross['sel_chacha_ms']):.3f} ms")
-            cc3.metric("跨帧 AES-CBC 均值", f"{np.mean(cross['sel_cbc_ms']):.3f} ms")
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            if cross.get("full_aes_gcm_ms"):
+                cc1.metric("跨帧全量 AES-GCM 均值", f"{np.mean(cross['full_aes_gcm_ms']):.3f} ms")
+            else:
+                cc1.metric("跨帧全量 AES-GCM", "—")
+            cc2.metric("跨帧选择性 AES-GCM 均值", f"{np.mean(cross['sel_aes_gcm_ms']):.3f} ms")
+            cc3.metric("跨帧 ChaCha20 均值", f"{np.mean(cross['sel_chacha_ms']):.3f} ms")
+            cc4.metric("跨帧 AES-CBC 均值", f"{np.mean(cross['sel_cbc_ms']):.3f} ms")
         else:
             st.info(
                 "⚠️ 尚未加载跨帧数据。请在侧栏「数据集 velodyne 目录」填入 `datasets/semantic_kitti/sequences/00/velodyne` "
@@ -794,7 +816,12 @@ else:
             cross_stds_arr = np.array(snap["cross_stds"])
             with col_c:
                 st.markdown("##### 跨帧 × 100 帧（不同文件）")
-                st.pyplot(render_four_algo_bars(cross_means_arr, cross_stds_arr, include_full=False))
+                _cf = len(cross_means_arr) == 4
+                st.pyplot(
+                    render_four_algo_bars(
+                        cross_means_arr, cross_stds_arr, include_full=_cf
+                    )
+                )
 
         st.markdown("##### 汇总数据表")
         rows = [
@@ -806,8 +833,14 @@ else:
         col1 = snap["means"]
         std1 = snap["stds"]
         cross_loaded = bool(snap.get("cross_loaded"))
-        cross_means4 = ["—"] + list(snap["cross_means"]) if cross_loaded else ["—"] * 4
-        cross_stds4 = ["—"] + list(snap["cross_stds"]) if cross_loaded else ["—"] * 4
+        cm = list(snap["cross_means"]) if cross_loaded and snap.get("cross_means") is not None else []
+        cs = list(snap["cross_stds"]) if cross_loaded and snap.get("cross_stds") is not None else []
+        if len(cm) == 4:
+            cross_means4, cross_stds4 = cm, cs
+        elif len(cm) == 3:
+            cross_means4, cross_stds4 = ["—"] + cm, ["—"] + cs
+        else:
+            cross_means4, cross_stds4 = ["—"] * 4, ["—"] * 4
         table_data = {"方案": rows}
         for i, label in enumerate(["单帧100次 均值±标准差", "跨帧100帧 均值±标准差"]):
             vals = []
@@ -839,12 +872,16 @@ else:
             n_pts_arr = cross["n_pts"]
             n_tgt_arr = cross["n_tgt"]
             sel_times = cross["sel_aes_gcm_ms"]
+            full_times = cross.get("full_aes_gcm_ms")
 
             fig_e, axes = plt.subplots(1, 3, figsize=(16, 4.5))
             # 左：跨帧选择性与全量耗时随帧变化
-            full_est = [0.002 * (n / 1e6) * 1000 * (1.15 if snap["key_size"] == 256 else 1.0) for n in n_pts_arr]
-            axes[0].plot(range(1, len(sel_times) + 1), sel_times, label="Sel. AES-GCM", alpha=0.8)
-            axes[0].plot(range(1, len(full_est) + 1), full_est, label="Full (estimated)", alpha=0.8)
+            if full_times and len(full_times) == len(sel_times):
+                axes[0].plot(range(1, len(sel_times) + 1), full_times, label=_lbl("Full AES-GCM", "全量 AES-GCM"), alpha=0.8)
+            else:
+                full_est = [0.002 * (n / 1e6) * 1000 * (1.15 if snap["key_size"] == 256 else 1.0) for n in n_pts_arr]
+                axes[0].plot(range(1, len(full_est) + 1), full_est, label=_lbl("Full (est.)", "全量（估算）"), alpha=0.8)
+            axes[0].plot(range(1, len(sel_times) + 1), sel_times, label=_lbl("Sel. AES-GCM", "选择性 AES-GCM"), alpha=0.8)
             axes[0].set_xlabel(_lbl("Frame #", "帧序号"))
             axes[0].set_ylabel(_lbl("Time (ms)", "耗时 (ms)"))
             axes[0].set_title(_lbl("Cross-frame latency", "跨帧耗时曲线"))
@@ -860,9 +897,11 @@ else:
 
             # 右：选择性 vs 全量散点（随帧序号）
             sel_mean = np.mean(sel_times)
-            full_mean = np.mean(full_est)
+            full_mean = float(np.mean(full_times)) if full_times and len(full_times) == len(sel_times) else float(
+                np.mean([0.002 * (n / 1e6) * 1000 * (1.15 if snap["key_size"] == 256 else 1.0) for n in n_pts_arr])
+            )
             axes[2].scatter(range(1, len(sel_times) + 1), sel_times, s=8, alpha=0.5, label=f"Sel. (avg {sel_mean:.3f}ms)")
-            axes[2].axhline(y=full_mean, color="red", linestyle="--", label=f"Full est. (avg {full_mean:.2f}ms)")
+            axes[2].axhline(y=full_mean, color="red", linestyle="--", label=f"Full (avg {full_mean:.2f}ms)")
             axes[2].axhline(y=sel_mean, color="green", linestyle="--", label=f"Sel. avg")
             axes[2].set_xlabel(_lbl("Frame #", "帧序号"))
             axes[2].set_ylabel(_lbl("Time (ms)", "耗时 (ms)"))
@@ -873,17 +912,22 @@ else:
             plt.tight_layout()
             st.pyplot(fig_e)
 
-            imp = (1 - sel_mean / full_mean) * 100
+            imp = (1 - sel_mean / full_mean) * 100 if full_mean > 0 else 0.0
             ce1, ce2, ce3, ce4 = st.columns(4)
             ce1.metric("跨帧选择性均值", f"{sel_mean:.3f} ms")
-            ce2.metric("全量估算均值", f"{full_mean:.2f} ms")
+            full_label = "跨帧全量实测均值" if full_times and len(full_times) == len(sel_times) else "全量估算均值"
+            ce2.metric(full_label, f"{full_mean:.2f} ms")
             ce3.metric("效率提升", f"{imp:.1f}%")
             ce4.metric("测试帧数", len(sel_times))
 
+            full_note = (
+                "全量 AES-GCM 为每帧整帧点云实测加密耗时。"
+                if full_times and len(full_times) == len(sel_times)
+                else "全量列为按帧点数线性估算，仅供无实测数据时参考。"
+            )
             st.markdown(
-                f"> 💡 跨帧泛化性测试说明：从数据集目录随机抽取 {len(sel_times)} 帧，"
-                f"各帧目标点数约 {np.mean(n_tgt_arr):.0f} ± {np.std(n_tgt_arr):.0f} 个；"
-                f"全量耗时为按帧点数线性估算（与实际全量加密误差约 ±5%），供参考。"
+                f"> 💡 跨帧泛化性：随机抽取 {len(sel_times)} 帧；"
+                f"各帧隐私目标约 {np.mean(n_tgt_arr):.0f} ± {np.std(n_tgt_arr):.0f} 点。{full_note}"
             )
         else:
             st.info(
