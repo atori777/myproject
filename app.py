@@ -63,6 +63,24 @@ def _lbl(en: str, zh: str) -> str:
     return zh if _CJK_FONT else en
 
 
+def normalize_velodyne_input(raw: str):
+    """
+    解析侧栏输入：支持「velodyne 文件夹」或「某个 .bin 的完整路径」。
+    返回 (用于 glob *.bin 的文件夹, 若用户写的是 .bin 路径则返回该文件规范化路径否则 None)。
+    """
+    if raw is None or not str(raw).strip():
+        return "", None
+    s = str(raw).strip().strip('"').strip("'").replace("\\", "/")
+    while len(s) > 1 and s.endswith("/"):
+        s = s[:-1]
+    if s.lower().endswith(".bin"):
+        parent = os.path.dirname(s)
+        folder = os.path.normpath(parent) if parent else ""
+        single = os.path.normpath(s)
+        return folder, single
+    return os.path.normpath(s), None
+
+
 # ==================== 业务逻辑 ====================
 
 def adaptive_detection(xyz):
@@ -569,12 +587,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("##### 2. 数据")
-    uploaded_file = st.file_uploader("上传 KITTI 点云 (.bin)", type=["bin"])
     velodyne_dir = st.text_input(
-        "数据集 velodyne 目录（用于跨帧测试）",
+        "velodyne 文件夹路径（用于抽取点云）",
         value="",
-        placeholder="例如 datasets/semantic_kitti/sequences/00/velodyne",
-        help="填入后「执行处理」将自动从该目录随机抽取 100 个 .bin 文件做跨帧测时，留空则使用模拟数据。",
+        placeholder="例：datasets/semantic_kitti/sequences/00/velodyne",
+        help="填入 velodyne 文件夹路径，点击「执行处理」后自动完成：① 随机抽 1 帧 × 100 次加密（稳定性）② 随机抽 100 帧各 1 次（泛化性）。",
     )
 
     st.markdown("---")
@@ -594,16 +611,18 @@ with st.sidebar:
 
 # ==================== 主流程 ====================
 
-cross_dir = velodyne_dir.strip().replace("\\", "/") if velodyne_dir else ""
+cross_folder, velodyne_single_bin = normalize_velodyne_input(velodyne_dir)
 
 if process_btn:
-    if uploaded_file is None and not cross_dir:
-        st.warning("请 **上传 .bin** 或 **填写 velodyne 目录**（至少一项），再点击「执行处理」。")
-    elif uploaded_file is None and cross_dir:
-        pattern = os.path.join(cross_dir, "*.bin")
+    if not cross_folder:
+        st.warning("请在侧栏「数据集路径」填入 **velodyne 文件夹**（如 `datasets/semantic_kitti/sequences/00/velodyne`），再点击「执行处理」。")
+    else:
+        pattern = os.path.join(cross_folder, "*.bin")
         all_bins = sorted(glob.glob(pattern))
         if len(all_bins) < 1:
-            st.error(f"未在目录中找到 .bin 文件，请检查路径是否正确：\n`{cross_dir}`")
+            st.error(f"在文件夹中未找到任何 `.bin` 文件：\n`{cross_folder}`")
+        elif len(all_bins) < 2:
+            st.error(f"文件夹中只有 1 个 `.bin`，需要至少 2 个（1 帧做单帧演示 + 至少 1 帧跑跨帧测时）。")
         else:
             if "engine" not in st.session_state:
                 with st.spinner("首次加载 RandLA-Net（约需数十秒）…"):
@@ -611,8 +630,16 @@ if process_btn:
             engine = st.session_state.engine
             if measurement_mode == "稳定展示":
                 np.random.seed(int(demo_seed))
+
             rng_pick = np.random.default_rng(int(demo_seed))
-            sample_path = str(rng_pick.choice(all_bins))
+
+            if velodyne_single_bin and os.path.isfile(velodyne_single_bin):
+                sample_path = velodyne_single_bin
+            else:
+                if velodyne_single_bin:
+                    st.warning(f"指定的单帧文件不存在或不可读，改为随机选取。")
+                sample_path = str(rng_pick.choice(all_bins))
+
             pts = np.frombuffer(open(sample_path, "rb").read(), dtype=np.float32).reshape(-1, 4)
             xyz = pts[:, :3].copy()
             num_points = len(xyz)
@@ -623,6 +650,7 @@ if process_btn:
             sense_time = float(result.get("inference_time", 0.0))
             num_target = int(np.sum(mask))
             target_pts = xyz[mask]
+
             if len(target_pts) > 0:
                 recovered_pts, crypto_time, ciphertext = secure_encryption_engine(
                     target_pts, key_size, measurement_mode, demo_seed
@@ -630,17 +658,20 @@ if process_btn:
             else:
                 recovered_pts, crypto_time, ciphertext = np.empty((0, 3)), 0.0001, b""
 
-            bench = run_100_frame_crypto_benchmark(xyz, mask, key_size, measurement_mode, demo_seed, n_frames=100)
+            bench = run_100_frame_crypto_benchmark(
+                xyz, mask, key_size, measurement_mode, demo_seed, n_frames=100
+            )
 
-            with st.spinner(f"正在从 {cross_dir} 随机抽取 100 帧推理 + 加密…（约 1–3 分钟）"):
+            with st.spinner(f"正在从 `{cross_folder}` 随机抽取 100 帧推理 + 加密…（约 1–3 分钟）"):
                 cross_bench = run_cross_frame_benchmark(
-                    cross_dir,
+                    cross_folder,
                     key_size,
                     n_frames=100,
                     measurement_mode=measurement_mode,
                     demo_seed=demo_seed,
                     engine=engine,
                 )
+
             cross_means = [
                 float(np.mean(cross_bench["full_aes_gcm_ms"])),
                 float(np.mean(cross_bench["sel_aes_gcm_ms"])),
@@ -654,10 +685,11 @@ if process_btn:
                 float(np.std(cross_bench["sel_cbc_ms"])),
             ]
             cross_loaded = True
+
             st.session_state["cross_bench"] = cross_bench
             st.session_state["cross_means"] = cross_means
             st.session_state["cross_stds"] = cross_stds
-            st.session_state["cross_dir"] = cross_dir
+            st.session_state["cross_dir"] = cross_folder
 
             means = [
                 float(np.mean(bench["full_aes_gcm_ms"])) if bench["full_aes_gcm_ms"] else 0.0,
@@ -708,138 +740,20 @@ if process_btn:
                 "cross_stds": cross_stds,
                 "cross_loaded": cross_loaded,
             }
-            st.success(f"已仅用目录完成处理：单帧演示来自随机样本 `{os.path.basename(sample_path)}`，并完成跨帧 100 帧测时。")
-
-    elif uploaded_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
-
-        data_bytes = uploaded_file.getvalue()
-        points = np.frombuffer(data_bytes, dtype=np.float32).reshape(-1, 4)
-        xyz = points[:, :3].copy()
-        num_points = len(xyz)
-
-        if "engine" not in st.session_state:
-            with st.spinner("首次加载 RandLA-Net（约需数十秒）…"):
-                st.session_state.engine = PointPrivacyEngine()
-        engine = st.session_state.engine
-        result = engine.protect_frame(tmp_path)
-
-        mask = result.get("mask", np.zeros(num_points, dtype=bool))
-        if not np.any(mask):
-            mask = adaptive_detection(xyz)
-
-        os.unlink(tmp_path)
-
-        if measurement_mode == "稳定展示":
-            np.random.seed(int(demo_seed))
-
-        sense_time = float(result.get("inference_time", 0.0))
-        num_target = int(np.sum(mask))
-        target_pts = xyz[mask]
-
-        if len(target_pts) > 0:
-            recovered_pts, crypto_time, ciphertext = secure_encryption_engine(
-                target_pts, key_size, measurement_mode, demo_seed
+            st.success(
+                f"✅ 处理完成：单帧演示 `{os.path.basename(sample_path)}` "
+                f"（{num_points} 点）；跨帧从 `{cross_folder}` 抽取 100 帧。"
             )
-        else:
-            recovered_pts, crypto_time, ciphertext = np.empty((0, 3)), 0.0001, b""
-
-        bench = run_100_frame_crypto_benchmark(xyz, mask, key_size, measurement_mode, demo_seed, n_frames=100)
-
-        cross_bench = None
-        cross_means = None
-        cross_stds = None
-        cross_loaded = False
-
-        if cross_dir:
-            with st.spinner(f"正在从 {cross_dir} 随机抽取 100 帧推理 + 加密…（约 1–3 分钟）"):
-                cross_bench = run_cross_frame_benchmark(
-                    cross_dir,
-                    key_size,
-                    n_frames=100,
-                    measurement_mode=measurement_mode,
-                    demo_seed=demo_seed,
-                    engine=engine,
-                )
-            cross_means = [
-                float(np.mean(cross_bench["full_aes_gcm_ms"])),
-                float(np.mean(cross_bench["sel_aes_gcm_ms"])),
-                float(np.mean(cross_bench["sel_chacha_ms"])),
-                float(np.mean(cross_bench["sel_cbc_ms"])),
-            ]
-            cross_stds = [
-                float(np.std(cross_bench["full_aes_gcm_ms"])),
-                float(np.std(cross_bench["sel_aes_gcm_ms"])),
-                float(np.std(cross_bench["sel_chacha_ms"])),
-                float(np.std(cross_bench["sel_cbc_ms"])),
-            ]
-            cross_loaded = True
-
-        if cross_loaded:
-            st.session_state["cross_bench"] = cross_bench
-            st.session_state["cross_means"] = cross_means
-            st.session_state["cross_stds"] = cross_stds
-            st.session_state["cross_dir"] = cross_dir
-
-        means = [
-            float(np.mean(bench["full_aes_gcm_ms"])) if bench["full_aes_gcm_ms"] else 0.0,
-            float(np.mean(bench["sel_aes_gcm_ms"])) if bench["sel_aes_gcm_ms"] else 0.0,
-            float(np.mean(bench["sel_chacha_ms"])) if bench["sel_chacha_ms"] else 0.0,
-            float(np.mean(bench["sel_cbc_ms"])) if bench["sel_cbc_ms"] else 0.0,
-        ]
-        stds = [
-            float(np.std(bench["full_aes_gcm_ms"])) if bench["full_aes_gcm_ms"] else 0.0,
-            float(np.std(bench["sel_aes_gcm_ms"])) if bench["sel_aes_gcm_ms"] else 0.0,
-            float(np.std(bench["sel_chacha_ms"])) if bench["sel_chacha_ms"] else 0.0,
-            float(np.std(bench["sel_cbc_ms"])) if bench["sel_cbc_ms"] else 0.0,
-        ]
-
-        fig_cmp, improvement, full_time_bar = render_performance_metrics(
-            crypto_time, num_points, max(num_target, 1), key_size, measurement_mode
-        )
-
-        st.session_state.batch_results.append(
-            {
-                "key_size": key_size,
-                "improvement": improvement,
-                "num_points": num_points,
-                "num_target": num_target,
-                "crypto_time": crypto_time,
-            }
-        )
-
-        st.session_state.last_snapshot = {
-            "xyz": xyz,
-            "mask": mask,
-            "recovered_pts": recovered_pts,
-            "measurement_mode": measurement_mode,
-            "demo_seed": demo_seed,
-            "num_points": num_points,
-            "num_target": num_target,
-            "sense_time": sense_time,
-            "key_size": key_size,
-            "crypto_time": crypto_time,
-            "ciphertext": ciphertext,
-            "bench": bench,
-            "means": means,
-            "stds": stds,
-            "full_time_bar": full_time_bar,
-            "improvement": improvement,
-            "cross_bench": cross_bench,
-            "cross_means": cross_means,
-            "cross_stds": cross_stds,
-            "cross_loaded": cross_loaded,
-        }
 
 snap = st.session_state.last_snapshot
 
 if snap is None:
     st.info(
-        "👈 请 **上传 `.bin`** 或 **填写 velodyne 目录**（至少一项），再点击 **执行处理**。"
-        " 仅填目录时：会从该目录随机选一帧做单帧演示，并跑跨帧 100 帧测时。"
-        " 展示内容：**单帧流程**、**100 次加密测时**、**四算法对比**、**攻击者视角**、**会话统计**。"
+        "👈 请在侧栏「**velodyne 文件夹路径**」填入 `datasets/semantic_kitti/sequences/00/velodyne`（或对应路径），"
+        " 然后点击 **执行处理**，系统会自动完成：\n\n"
+        "① **随机抽 1 帧 × 100 次加密** → 验证同帧稳定性（Tab B）\n"
+        "② **随机抽 100 帧 × 各 1 次加密** → 验证跨帧泛化性（Tab B/C）\n\n"
+        "展示内容：**单帧流程**、**100 次加密测时**、**四算法耗时对比**、**攻击者视角**、**会话统计**。"
     )
 else:
     xyz = snap["xyz"]
