@@ -63,21 +63,6 @@ def _lbl(en: str, zh: str) -> str:
     return zh if _CJK_FONT else en
 
 
-def resolve_velodyne_dir(raw: str):
-    """
-    用户填 sequences/00 → 内部自动拼成 sequences/00/velodyne。
-    返回 (最终 velodyne 文件夹路径, 目录是否在当前环境存在)。
-    """
-    if not raw or not str(raw).strip():
-        return "", False
-    s = str(raw).strip().strip('"').strip("'").replace("\\", "/")
-    while s.endswith("/"):
-        s = s[:-1]
-    base = os.path.normpath(s)
-    velodyne = os.path.join(base, "velodyne")
-    return velodyne, os.path.isdir(velodyne)
-
-
 def build_synthetic_demo_frame(demo_seed: int, n_pts: int = None):
     """无本地 velodyne 时生成一帧类似 KITTI 分布的点云（仅稳定展示）。"""
     rng = np.random.default_rng(int(demo_seed))
@@ -602,47 +587,19 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("##### 2. 数据")
-    velodyne_dir = st.text_input(
-        "KITTI sequences 目录（填到序号即可）",
-        value="datasets/sequences/00",
-        placeholder="datasets/sequences/00",
-        help="填到序列号即可，系统自动找其下的 velodyne 文件夹（如 `datasets/sequences/00/velodyne`）。",
+    st.caption("直接选一个 .bin 文件（会自动用同目录其余帧做 100 帧跨帧测时）")
+    uploaded_bin = st.file_uploader(
+        "选择单帧点云 .bin 文件",
+        type=["bin"],
+        help="选一个 .bin，自动以其父目录做 100 帧跨帧测时。",
     )
 
-    # 扫描该 sequences 下所有 .bin 并列出供选择
-    _scan_bins = []
-    _vel_folder, _folder_ok = resolve_velodyne_dir(velodyne_dir)
-    if _folder_ok:
-        try:
-            _scan_bins = sorted(
-                glob.glob(os.path.join(_vel_folder, "*.bin")),
-                key=lambda p: int(os.path.splitext(os.path.basename(p))[0]),
-            )
-        except Exception:
-            _scan_bins = []
-
-    if _scan_bins:
-        _default_idx = min(42, len(_scan_bins) - 1)
-        selected_bin = st.selectbox(
-            "选择要演示的单帧点云",
-            _scan_bins,
-            format_func=lambda p: os.path.basename(p),
-            index=_default_idx,
-            help=f"共扫描到 {len(_scan_bins)} 帧 .bin，选一帧做单帧演示，其余用于跨帧 100 帧测时。",
-        )
-    else:
-        selected_bin = None
-        _err_hint = (
-            f"路径 `{_vel_folder}` 在当前环境中不存在（可能填错或云端无本机 D 盘）。"
-            if not _folder_ok
-            else f"目录下没有找到 .bin 文件（路径 `{_vel_folder}`）。"
-        )
-        st.caption(f"⚠️ {_err_hint}  稳定展示模式可自动用模拟数据兜底。")
-        selected_bin = st.text_input(
-            "或直接粘贴单个 .bin 完整路径（备选）",
-            value="",
-            placeholder="datasets/sequences/00/velodyne/000009.bin",
-        )
+    velodyne_folder_input = st.text_input(
+        "velodyne 文件夹路径（直接填到 velodyne 为止）",
+        value="datasets/semantic_kitti/dataset/sequences/00/velodyne",
+        placeholder="datasets/semantic_kitti/dataset/sequences/00/velodyne",
+        help="直接填 velodyne 文件夹路径，跨帧测时从该目录扫描 .bin。",
+    )
 
     st.markdown("---")
     st.markdown("##### 3. 密码参数")
@@ -717,36 +674,63 @@ def _load_and_process_sample(sample_path, key_size, measurement_mode, demo_seed,
     return xyz, mask, recovered_pts, sense_time, crypto_time, ciphertext, num_points, num_target
 
 
-velodyne_folder, folder_exists = resolve_velodyne_dir(velodyne_dir)
+def _load_bin_from_path(path):
+    pts = np.frombuffer(open(path, "rb").read(), dtype=np.float32).reshape(-1, 4)
+    return pts[:, :3].copy()
+
+
+velodyne_folder = os.path.normpath(velodyne_folder_input)
 
 if process_btn:
-    all_bins = sorted(glob.glob(os.path.join(velodyne_folder, "*.bin"))) if folder_exists else []
-    has_real = selected_bin is not None and os.path.isfile(selected_bin)
+    all_bins = sorted(glob.glob(os.path.join(velodyne_folder, "*.bin"))) if os.path.isdir(velodyne_folder) else []
 
-    # ── 有真实单帧选中（最优先） ──────────────────────────
-    if has_real:
+    # ── 上传文件优先 ──────────────────────────────────────
+    if uploaded_bin is not None:
         if "engine" not in st.session_state:
             with st.spinner("首次加载 RandLA-Net（约需数十秒）…"):
                 st.session_state.engine = PointPrivacyEngine()
         engine = st.session_state.engine
 
-        xyz, mask, recovered_pts, sense_time, crypto_time, ciphertext, num_points, num_target = \
-            _load_and_process_sample(selected_bin, key_size, measurement_mode, demo_seed, engine)
+        import tempfile
+        # 写入临时文件供 engine 读取，结束后立即删除
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
+            tmp.write(uploaded_bin.getvalue())
+            tmp_path = tmp.name
+
+        pts = np.frombuffer(open(tmp_path, "rb").read(), dtype=np.float32).reshape(-1, 4)
+        xyz = pts[:, :3].copy()
+        os.unlink(tmp_path)
+        num_points = len(xyz)
+
+        result = engine.protect_frame(tmp_path)
+        mask = result.get("mask", np.zeros(num_points, dtype=bool))
+        if not np.any(mask):
+            mask = adaptive_detection(xyz)
+        sense_time = float(result.get("inference_time", 0.0))
+        num_target = int(np.sum(mask))
+        target_pts = xyz[mask]
+        if len(target_pts) > 0:
+            recovered_pts, crypto_time, ciphertext = secure_encryption_engine(
+                target_pts, key_size, measurement_mode, demo_seed)
+        else:
+            recovered_pts, crypto_time, ciphertext = np.empty((0, 3)), 0.0001, b""
 
         bench = run_100_frame_crypto_benchmark(xyz, mask, key_size, measurement_mode, demo_seed, n_frames=100)
 
-        with st.spinner(f"正在从 `{velodyne_folder}` 对 100 帧各推理 + 加密…"):
+        # 跨帧测时用 velodyne_folder（用户文本路径）
+        cross_folder = velodyne_folder if os.path.isdir(velodyne_folder) else None
+        with st.spinner("正在对 100 帧各推理 + 加密…"):
             cross_bench = run_cross_frame_benchmark(
-                velodyne_folder, key_size, n_frames=100,
+                cross_folder, key_size, n_frames=100,
                 measurement_mode=measurement_mode, demo_seed=demo_seed, engine=engine)
 
         _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
                          ciphertext, bench, cross_bench, measurement_mode,
                          demo_seed, num_points, num_target, key_size,
-                         cross_dir_label=velodyne_folder)
-        st.success(f"✅ 真实数据：`{os.path.basename(selected_bin)}`（{num_points} 点）；100 帧跨帧测时完成。")
+                         cross_dir_label=cross_folder)
+        st.success(f"✅ 真实数据：`{uploaded_bin.name}`（{num_points} 点）；100 帧跨帧测时完成。")
 
-    # ── 稳定展示 + 路径无效 → 模拟数据（自动兜底） ───────
+    # ── 稳定展示 + 路径无效 → 模拟数据 ────────────────────
     elif measurement_mode == "稳定展示":
         np.random.seed(int(demo_seed))
         xyz, mask = build_synthetic_demo_frame(demo_seed)
@@ -769,28 +753,25 @@ if process_btn:
                          ciphertext, bench, cross_bench, measurement_mode,
                          demo_seed, num_points, num_target, key_size,
                          cross_dir_label="（模拟数据）")
-        st.success("✅ 稳定展示（模拟点云）：RandLA-Net 未加载，图表仍可正常展示。")
+        st.success("✅ 稳定展示（模拟点云）：图表可正常展示。")
 
     # ── 真实测量 + 路径无效 → 报错 ───────────────────────
     else:
-        if folder_exists:
-            st.error(f"**真实测量**：velodyne 文件夹存在但 `.bin` 数量不足 2 个。\n"
-                     f"路径：`{velodyne_folder}`\n实际 `.bin` 数量：{len(all_bins)}。")
+        folder_ok = os.path.isdir(velodyne_folder)
+        if folder_ok:
+            if len(all_bins) < 2:
+                st.error(f"该文件夹只有 {len(all_bins)} 个 `.bin`，需要至少 2 个。")
+            else:
+                st.error(f"请上传一个 .bin 文件，或改为「稳定展示」用模拟数据。")
         else:
-            st.error(f"**真实测量**：sequences 目录不存在（云端无本机 `D:\\`）。\n"
-                     f"填入路径：`{velodyne_dir}`\n实际解析为：`{velodyne_folder}`\n\n"
-                     "**解决**：① 改为「稳定展示」用模拟数据；② 把点云放进仓库相对路径 `datasets/sequences/00/velodyne`；"
-                     "③ 在本机 `streamlit run app.py`。")
+            st.error(f"velodyne 文件夹不存在：`{velodyne_folder}`\n请确认路径正确。")
 
 snap = st.session_state.last_snapshot
 
 if snap is None:
     st.info(
-        "👈 在侧栏「**KITTI sequences**」确认目录后，下方下拉框会列出该目录下所有 `.bin`，"
-        " 选中一帧作为**单帧演示**；其余帧用于 **100 帧跨帧测时**。"
-        " 点击 **执行处理** 即可运行。\n\n"
-        "若 sequences 在当前环境不存在，「**稳定展示**」自动用模拟数据兜底；"
-        "「真实测量」要求目录存在且含 `.bin`。"
+        "👈 上传一个 `.bin` 文件作为单帧演示；侧栏路径用于跨帧 100 帧测时（其余 `.bin`）。"
+        " 若不想上传，改为「稳定展示」可自动用模拟数据。点击 **执行处理** 即可运行。"
     )
 else:
     xyz = snap["xyz"]
