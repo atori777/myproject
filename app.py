@@ -789,20 +789,18 @@ else:
         ]
         col1 = snap["means"]
         std1 = snap["stds"]
-        col2 = snap["cross_means"] if snap.get("cross_loaded") else ["—"] * 3
-        std2 = snap["cross_stds"] if snap.get("cross_loaded") else ["—"] * 3
+        cross_loaded = bool(snap.get("cross_loaded"))
+        cross_means4 = ["—"] + list(snap["cross_means"]) if cross_loaded else ["—"] * 4
+        cross_stds4 = ["—"] + list(snap["cross_stds"]) if cross_loaded else ["—"] * 4
         table_data = {"方案": rows}
         for i, label in enumerate(["单帧100次 均值±标准差", "跨帧100帧 均值±标准差"]):
             vals = []
             for j in range(len(rows)):
-                if j == 0 and i == 1:
-                    vals.append("—")
-                elif col2[j] == "—" if i == 1 else False:
-                    vals.append("—")
-                else:
-                    v1 = col1[j] if i == 0 else col2[j - 1 if j > 0 else 0]
-                    s1 = std1[j] if i == 0 else std2[j - 1 if j > 0 else 0]
-                    vals.append(f"{v1:.3f} ± {s1:.3f}")
+                src_means = col1 if i == 0 else cross_means4
+                src_stds = std1 if i == 0 else cross_stds4
+                v = src_means[j]
+                s = src_stds[j]
+                vals.append("—" if v == "—" else f"{float(v):.3f} ± {float(s):.3f}")
             table_data[label] = vals
         st.dataframe(table_data, use_container_width=True)
 
@@ -902,3 +900,4 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
+
