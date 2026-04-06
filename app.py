@@ -243,22 +243,39 @@ def render_performance_metrics(sel_time, total_pts, target_pts, key_size, measur
     return fig, improvement, full_time
 
 
-def render_four_algo_bars(means_ms, stds_ms):
-    """四算法平均耗时柱状图（选择性三项 + 全量 AES-GCM）。"""
-    names = [
-        _lbl("Full\nAES-GCM", "全量\nAES-GCM"),
-        _lbl("Sel.\nAES-GCM", "选择性\nAES-GCM"),
-        _lbl("Sel.\nChaCha20", "选择性\nChaCha20"),
-        _lbl("Sel.\nAES-CBC", "选择性\nAES-CBC"),
-    ]
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    x = np.arange(4)
-    colors = ["#e74c3c", "#2ecc71", "#3498db", "#9b59b6"]
+def render_four_algo_bars(means_ms, stds_ms, include_full=True):
+    """
+    绘制算法耗时柱状图。
+    include_full=True  → 4 根柱（全量 + 3 选择性），expects 4-element arrays
+    include_full=False → 3 根柱（仅 3 选择性），expects 3-element arrays
+    """
+    if include_full:
+        names = [
+            _lbl("Full\nAES-GCM", "全量\nAES-GCM"),
+            _lbl("Sel.\nAES-GCM", "选择性\nAES-GCM"),
+            _lbl("Sel.\nChaCha20", "选择性\nChaCha20"),
+            _lbl("Sel.\nAES-CBC", "选择性\nAES-CBC"),
+        ]
+        colors = ["#e74c3c", "#2ecc71", "#3498db", "#9b59b6"]
+    else:
+        names = [
+            _lbl("Sel.\nAES-GCM", "选择性\nAES-GCM"),
+            _lbl("Sel.\nChaCha20", "选择性\nChaCha20"),
+            _lbl("Sel.\nAES-CBC", "选择性\nAES-CBC"),
+        ]
+        colors = ["#2ecc71", "#3498db", "#9b59b6"]
+
+    n = len(names)
+    fig, ax = plt.subplots(figsize=(max(8, n * 2.2), 4.5))
+    x = np.arange(n)
     ax.bar(x, means_ms, yerr=stds_ms, color=colors, capsize=4, edgecolor="black", linewidth=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels(names, fontsize=10)
     ax.set_ylabel(_lbl("Mean time (ms)", "平均耗时 (ms)"))
-    ax.set_title(_lbl("Four schemes: mean time (100 runs)", "四方案：100 次平均加密耗时"), fontsize=13)
+    ax.set_title(
+        _lbl("Selective algorithms: mean time (100 runs)", "选择性算法：100 次平均加密耗时"),
+        fontsize=13,
+    )
     ax.grid(axis="y", linestyle="--", alpha=0.5)
     plt.tight_layout()
     return fig
@@ -600,8 +617,7 @@ if uploaded_file and process_btn:
     cross_means = None
     cross_stds = None
     cross_loaded = False
-    cross_dir = velodyne_dir.strip() if velodyne_dir else ""
-    cross_cached_key = f"cross_{cross_dir}_{key_size}"
+    cross_dir = velodyne_dir.strip().replace("\\", "/") if velodyne_dir else ""
 
     if cross_dir:
         with st.spinner(f"正在从 {cross_dir} 随机抽取 100 帧推理 + 加密…（首次约需 1-3 分钟）"):
@@ -778,7 +794,7 @@ else:
             cross_stds_arr = np.array(snap["cross_stds"])
             with col_c:
                 st.markdown("##### 跨帧 × 100 帧（不同文件）")
-                st.pyplot(render_four_algo_bars(cross_means_arr, cross_stds_arr))
+                st.pyplot(render_four_algo_bars(cross_means_arr, cross_stds_arr, include_full=False))
 
         st.markdown("##### 汇总数据表")
         rows = [
@@ -900,4 +916,3 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
-
