@@ -336,8 +336,10 @@ def run_cross_frame_benchmark(
 
     返回 dict: {algo: [times_ms_per_frame]}
     """
-    pattern = os.path.join(velodyne_dir, "*.bin")
-    all_files = sorted(glob.glob(pattern))
+    if velodyne_dir and os.path.isdir(velodyne_dir):
+        all_files = sorted(glob.glob(os.path.join(velodyne_dir, "*.bin")))
+    else:
+        all_files = []
 
     rng = np.random.default_rng(int(demo_seed))
     gcm_key = AESGCM.generate_key(bit_length=key_size)
@@ -651,6 +653,7 @@ def _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
         full_time_bar=full_time_bar, improvement=improvement,
         cross_bench=cross_bench, cross_means=cross_means,
         cross_stds=cross_stds, cross_loaded=True,
+        cross_dir=cross_dir_label,
     )
 
 
@@ -845,7 +848,7 @@ else:
         if snap.get("cross_loaded") and snap.get("cross_bench") is not None:
             cross = snap["cross_bench"]
             st.markdown(
-                f"✅ 已从 **{snap.get('cross_dir', velodyne_dir)}** 随机抽取 {len(cross['sel_aes_gcm_ms'])} 帧真实推理 + 加密。"
+                f"✅ 已从 **{snap.get('cross_dir', '（未记录）')}** 随机抽取 {len(cross['sel_aes_gcm_ms'])} 帧真实推理 + 加密。"
                 " 上图是耗时折线，下图是各帧隐私目标点数（≈ 8-18% 总点数）。"
             )
             st.pyplot(render_cross_frame_lines(cross, 100))
@@ -859,10 +862,9 @@ else:
             cc4.metric("跨帧 AES-CBC 均值", f"{np.mean(cross['sel_cbc_ms']):.3f} ms")
         else:
             st.info(
-                "⚠️ 尚未加载跨帧数据。请在侧栏「数据集 velodyne 目录」填入 `datasets/semantic_kitti/sequences/00/velodyne` "
-                "（或对应路径），重新点击「执行处理」即可自动随机抽取 100 帧测时。"
+                "⚠️ 尚未加载跨帧数据。请侧栏填写 **velodyne 文件夹路径**（与上传的 .bin 同目录），"
+                " 再点击「执行处理」。"
             )
-            st.code("# 本地示例路径（需根据你实际数据集结构调整）", language="text")
 
     with tab_c:
         st.subheader("四方案平均耗时：单帧 100 次 vs 跨帧 100 帧")
@@ -1020,4 +1022,3 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
-
