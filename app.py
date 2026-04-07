@@ -692,17 +692,25 @@ if process_btn:
         engine = st.session_state.engine
 
         import tempfile
-        # 写入临时文件供 engine 读取，结束后立即删除
+        bin_bytes = uploaded_bin.getvalue()
+        # 写入临时文件供 engine 读取，读取完毕立即删除
         with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
-            tmp.write(uploaded_bin.getvalue())
+            tmp.write(bin_bytes)
             tmp_path = tmp.name
 
-        pts = np.frombuffer(open(tmp_path, "rb").read(), dtype=np.float32).reshape(-1, 4)
+        # 读取点云（内存中已有，不依赖临时文件）
+        pts = np.frombuffer(bin_bytes, dtype=np.float32).reshape(-1, 4)
         xyz = pts[:, :3].copy()
-        os.unlink(tmp_path)
         num_points = len(xyz)
 
+        # engine 从临时文件读取并推理
         result = engine.protect_frame(tmp_path)
+
+        # engine 读完后安全删除临时文件
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         mask = result.get("mask", np.zeros(num_points, dtype=bool))
         if not np.any(mask):
             mask = adaptive_detection(xyz)
@@ -1012,3 +1020,4 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
+
