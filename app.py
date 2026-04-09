@@ -526,7 +526,11 @@ with st.sidebar:
         "velodyne 文件夹路径（直接填到 velodyne 为止）",
         value="datasets/semantic_kitti/dataset/sequences/00/velodyne",
         placeholder="datasets/semantic_kitti/dataset/sequences/00/velodyne",
-        help="须为含 KITTI `.bin` 的 velodyne 文件夹（路径以 /velodyne 结尾），且至少 2 个 .bin；Streamlit Cloud 上为仓库内相对路径。",
+        help=(
+            "须为含 KITTI `.bin` 的 velodyne 文件夹（以 /velodyne 结尾），且至少 2 个 .bin。"
+            " 在 Streamlit Cloud / Linux 上请填 **仓库内相对路径**（如默认占位符），"
+            "不要使用本机 `D:\\...`——云端服务器没有你的硬盘。"
+        ),
     )
 
     st.markdown("---")
@@ -625,6 +629,34 @@ def _load_bin_from_path(path):
     return pts[:, :3].copy()
 
 
+def _looks_like_windows_drive_path(path: str) -> bool:
+    """本机 Windows 盘符路径；在 Linux/Streamlit Cloud 上不存在。"""
+    if not path or len(path) < 2:
+        return False
+    return path[1] == ":" and path[0].isalpha()
+
+
+# ── 内置 100 帧基准测试目录（仓库内，轻量，约 100 个 .bin）────
+BUILTIN_BENCH_DIR = os.path.join(os.path.dirname(__file__), "datasets", "benchmark", "100_frames")
+
+
+def _resolve_cross_folder(user_path: str):
+    """
+    跨帧测时目录优先级：
+    1. 内置 benchmark 目录（含 100 个 .bin，云端开箱即用）
+    2. 用户侧栏填写的 velodyne 路径（本地开发 / 自备数据集）
+    返回 (resolved_path, source_label)；均无效则返回 (None, None)。
+    """
+    if os.path.isdir(BUILTIN_BENCH_DIR) and len(glob.glob(os.path.join(BUILTIN_BENCH_DIR, "*.bin"))) >= 2:
+        return BUILTIN_BENCH_DIR, "内置 100 帧基准"
+    user_norm = os.path.normpath(user_path)
+    if os.path.isdir(user_norm):
+        user_bins = len(glob.glob(os.path.join(user_norm, "*.bin")))
+        if user_bins >= 2:
+            return user_norm, f"侧栏路径（{user_bins} 个 .bin）"
+    return None, None
+
+
 velodyne_folder = os.path.normpath(velodyne_folder_input)
 
 if process_btn:
@@ -672,11 +704,13 @@ if process_btn:
 
         bench = run_100_frame_crypto_benchmark(xyz, mask, key_size, n_frames=100)
 
-        # 跨帧测时用 velodyne_folder（用户文本路径）
-        cross_folder = velodyne_folder if os.path.isdir(velodyne_folder) else None
-        with st.spinner("正在对 100 帧各推理 + 加密…"):
-            cross_bench = run_cross_frame_benchmark(
-                cross_folder, key_size, n_frames=100, engine=engine)
+        cross_folder, cross_source = _resolve_cross_folder(velodyne_folder)
+        if cross_folder is None:
+            cross_bench = None
+        else:
+            with st.spinner(f"正在对 100 帧各推理 + 加密（{cross_source}）…"):
+                cross_bench = run_cross_frame_benchmark(
+                    cross_folder, key_size, n_frames=100, engine=engine)
 
         _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
                          ciphertext, bench, cross_bench,
@@ -687,12 +721,15 @@ if process_btn:
             f"同一点云×100 次加密稳定性测时已记录。"
         )
         if cross_bench is not None:
-            st.success("✅ 100 帧跨帧测时已完成（从侧栏 velodyne 目录抽取不同 .bin）。")
+            src_note = cross_source if cross_source else "内置 100 帧基准"
+            st.success(f"✅ 100 帧跨帧测时已完成（{src_note}，100 个不同 .bin）。")
         else:
-            st.warning(
-                "跨帧测时未执行：侧栏路径不是有效目录、未以 **velodyne** 结尾、或该目录下 `.bin` 不足 2 个。"
-                " 例如：`datasets/semantic_kitti/dataset/sequences/00/velodyne`。"
+            w = (
+                "跨帧测时未执行：内置基准目录和侧栏路径均无效（需至少 2 个 .bin）。"
             )
+            if _looks_like_windows_drive_path(velodyne_folder_input.strip()):
+                w += " 在云端请勿使用本机 `D:\\...`，应使用仓库相对路径。"
+            st.warning(w)
 
     # ── 未上传文件 → 报错 ───────────────────────────────
     else:
@@ -703,7 +740,14 @@ if process_btn:
             else:
                 st.error("请上传一个 .bin 文件以继续。")
         else:
-            st.error(f"velodyne 文件夹不存在：`{velodyne_folder}`\n请确认路径正确。")
+            msg = f"velodyne 文件夹不存在：`{velodyne_folder}`\n请确认路径正确。"
+            if _looks_like_windows_drive_path(velodyne_folder_input.strip()):
+                msg += (
+                    "\n\n若在 **Streamlit Cloud** 或远程 Linux 上运行：不能使用本机 `D:\\...`，"
+                    "请改为仓库根目录下的相对路径，例如："
+                    "`datasets/semantic_kitti/dataset/sequences/00/velodyne`（并确保该目录已随仓库部署）。"
+                )
+            st.error(msg)
 
 snap = st.session_state.last_snapshot
 
