@@ -513,18 +513,20 @@ with st.sidebar:
     st.header("⚙️ 控制面板")
     st.markdown("---")
     st.markdown("##### 2. 数据")
-    st.caption("直接选一个 .bin 文件（会自动用同目录其余帧做 100 帧跨帧测时）")
+    st.caption(
+        "上传仅提供当前帧；100 帧跨帧测时需侧栏填写服务器上 **velodyne** 目录（该目录下至少 2 个 .bin）。"
+    )
     uploaded_bin = st.file_uploader(
         "选择单帧点云 .bin 文件",
         type=["bin"],
-        help="选一个 .bin，自动以其父目录做 100 帧跨帧测时。",
+        help="浏览器上传的文件在云端无兄弟路径，跨帧依赖下方文本框中的 velodyne 目录。",
     )
 
     velodyne_folder_input = st.text_input(
         "velodyne 文件夹路径（直接填到 velodyne 为止）",
         value="datasets/semantic_kitti/dataset/sequences/00/velodyne",
         placeholder="datasets/semantic_kitti/dataset/sequences/00/velodyne",
-        help="直接填 velodyne 文件夹路径，跨帧测时从该目录扫描 .bin。",
+        help="须为含 KITTI `.bin` 的 velodyne 文件夹（路径以 /velodyne 结尾），且至少 2 个 .bin；Streamlit Cloud 上为仓库内相对路径。",
     )
 
     st.markdown("---")
@@ -544,14 +546,33 @@ with st.sidebar:
 
 # ==================== 主流程 ====================
 
+def _empty_cross_bench():
+    return {
+        "full_aes_gcm_ms": [],
+        "sel_aes_gcm_ms": [],
+        "sel_chacha_ms": [],
+        "sel_cbc_ms": [],
+        "n_pts": [],
+        "n_tgt": [],
+    }
+
+
 def _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
                      ciphertext, bench, cross_bench,
                      num_points, num_target, key_size, cross_dir_label):
     """共用：计算统计量 → 存 session → 成功提示。"""
-    cross_means = [float(np.mean(cross_bench[k])) for k in (
-        "full_aes_gcm_ms", "sel_aes_gcm_ms", "sel_chacha_ms", "sel_cbc_ms")]
-    cross_stds  = [float(np.std(cross_bench[k]))  for k in (
-        "full_aes_gcm_ms", "sel_aes_gcm_ms", "sel_chacha_ms", "sel_cbc_ms")]
+    if cross_bench is None:
+        cross_bench_safe = _empty_cross_bench()
+        cross_means = [0.0, 0.0, 0.0, 0.0]
+        cross_stds = [0.0, 0.0, 0.0, 0.0]
+        cross_loaded_flag = False
+    else:
+        cross_bench_safe = cross_bench
+        cross_means = [float(np.mean(cross_bench[k])) for k in (
+            "full_aes_gcm_ms", "sel_aes_gcm_ms", "sel_chacha_ms", "sel_cbc_ms")]
+        cross_stds = [float(np.std(cross_bench[k])) for k in (
+            "full_aes_gcm_ms", "sel_aes_gcm_ms", "sel_chacha_ms", "sel_cbc_ms")]
+        cross_loaded_flag = True
 
     means = [float(np.mean(bench[k])) if bench[k] else 0.0
              for k in ("full_aes_gcm_ms", "sel_aes_gcm_ms", "sel_chacha_ms", "sel_cbc_ms")]
@@ -564,18 +585,18 @@ def _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
     st.session_state.batch_results.append({
         "key_size": key_size, "improvement": improvement,
         "num_points": num_points, "num_target": num_target, "crypto_time": crypto_time})
-    st.session_state["cross_bench"] = cross_bench
+    st.session_state["cross_bench"] = cross_bench_safe
     st.session_state["cross_means"] = cross_means
-    st.session_state["cross_stds"]  = cross_stds
-    st.session_state["cross_dir"]   = cross_dir_label
+    st.session_state["cross_stds"] = cross_stds
+    st.session_state["cross_dir"] = cross_dir_label
     st.session_state.last_snapshot = dict(
         xyz=xyz, mask=mask, recovered_pts=recovered_pts,
         num_points=num_points, num_target=num_target,
         sense_time=sense_time, key_size=key_size, crypto_time=crypto_time,
         ciphertext=ciphertext, bench=bench, means=means, stds=stds,
         full_time_bar=full_time_bar, improvement=improvement,
-        cross_bench=cross_bench, cross_means=cross_means,
-        cross_stds=cross_stds, cross_loaded=cross_bench is not None,
+        cross_bench=cross_bench_safe, cross_means=cross_means,
+        cross_stds=cross_stds, cross_loaded=cross_loaded_flag,
         cross_dir=cross_dir_label,
     )
 
@@ -661,7 +682,17 @@ if process_btn:
                          ciphertext, bench, cross_bench,
                          num_points, num_target, key_size,
                          cross_dir_label=cross_folder)
-        st.success(f"✅ 真实数据：`{uploaded_bin.name}`（{num_points} 点）；100 帧跨帧测时完成。")
+        st.success(
+            f"✅ 真实数据：`{uploaded_bin.name}`（{num_points} 点）；"
+            f"同一点云×100 次加密稳定性测时已记录。"
+        )
+        if cross_bench is not None:
+            st.success("✅ 100 帧跨帧测时已完成（从侧栏 velodyne 目录抽取不同 .bin）。")
+        else:
+            st.warning(
+                "跨帧测时未执行：侧栏路径不是有效目录、未以 **velodyne** 结尾、或该目录下 `.bin` 不足 2 个。"
+                " 例如：`datasets/semantic_kitti/dataset/sequences/00/velodyne`。"
+            )
 
     # ── 未上传文件 → 报错 ───────────────────────────────
     else:
