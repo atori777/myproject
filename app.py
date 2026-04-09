@@ -58,6 +58,18 @@ def setup_matplotlib_cjk():
 
 _CJK_FONT = setup_matplotlib_cjk()
 
+# ==================== JSON 基准数据加载 ====================
+BENCHMARK_JSON_PATH = os.path.join(os.path.dirname(__file__), "benchmark_results.json")
+
+
+def load_benchmark_json():
+    """从 benchmark_results.json 加载本地预跑的 100 帧真实数据。"""
+    if os.path.exists(BENCHMARK_JSON_PATH):
+        import json
+        with open(BENCHMARK_JSON_PATH, encoding='utf-8') as f:
+            return json.load(f)
+    return None
+
 
 def _lbl(en: str, zh: str) -> str:
     """有 CJK 字体用中文，否则英文避免方框。"""
@@ -817,11 +829,26 @@ else:
         cb1.metric("全量 AES-GCM 均值", f"{np.mean(b['full_aes_gcm_ms']):.3f} ms")
         cb2.metric("选择性 AES-GCM 均值", f"{np.mean(b['sel_aes_gcm_ms']):.3f} ms")
         cb3.metric("选择性 ChaCha20 均值", f"{np.mean(b['sel_chacha_ms']):.3f} ms")
-        cb4.metric("选择性 AES-CBC 均值", f"{np.mean(b['sel_cbc_ms']):.3f} ms")
+        cb4.metric("选择性 AES-CBC 均���", f"{np.mean(b['sel_cbc_ms']):.3f} ms")
 
         st.markdown("---")
         st.subheader("泛化性验证：100 帧各测一次")
-        if snap.get("cross_loaded") and snap.get("cross_bench") is not None:
+
+        # 优先使用本地预跑的 JSON 真实数据
+        bench_json = load_benchmark_json()
+        if bench_json is not None:
+            st.markdown(
+                "✅ **数据来源**：`benchmark_results.json`（本地预跑 100 帧，真实 RandLA-Net 推理 + 加密）"
+            )
+            cross = bench_json["per_frame"]
+            st.pyplot(render_cross_frame_lines(cross, 100))
+            stat = bench_json["statistics"]
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1.metric("全量 AES-GCM 均值", f"{stat['avg_full_aes_gcm_ms']:.3f} ms")
+            cc2.metric("选择性 AES-GCM 均值", f"{stat['avg_sel_aes_gcm_ms']:.3f} ms")
+            cc3.metric("选择性 ChaCha20 均值", f"{stat['avg_sel_chacha_ms']:.3f} ms")
+            cc4.metric("选择性 AES-CBC 均值", f"{stat['avg_sel_cbc_ms']:.3f} ms")
+        elif snap.get("cross_loaded") and snap.get("cross_bench") is not None:
             cross = snap["cross_bench"]
             st.markdown(
                 f"✅ 已从 **{snap.get('cross_dir', '（未记录）')}** 随机抽取 {len(cross['sel_aes_gcm_ms'])} 帧真实推理 + 加密。"
@@ -838,8 +865,8 @@ else:
             cc4.metric("跨帧 AES-CBC 均值", f"{np.mean(cross['sel_cbc_ms']):.3f} ms")
         else:
             st.info(
-                "⚠️ 尚未加载跨帧数据。请确认仓库已包含 **`datasets/benchmark/100_frames/`**（约 100 个 .bin）"
-                " 并重新部署；或侧栏填写服务器上存在的 **velodyne** 目录（≥2 个 .bin）。"
+                "⚠️ 尚未加载跨帧数据。请确认仓库已包含 **`benchmark_results.json`** 并重新部署；"
+                " 或侧栏填写服务器上存在的 **velodyne** 目录（≥2 个 .bin）。"
                 " 再点击「执行处理」。"
             )
 
@@ -849,7 +876,54 @@ else:
         with col_m:
             st.markdown("##### 单帧 × 100 次（同一点云）")
             st.pyplot(render_four_algo_bars(np.array(snap["means"]), np.array(snap["stds"])))
-        if snap.get("cross_loaded") and snap.get("cross_bench") is not None:
+
+        # 优先使用本地预跑的 JSON 真实数据
+        bench_json = load_benchmark_json()
+        if bench_json is not None:
+            stat = bench_json["statistics"]
+            with col_c:
+                st.markdown("##### 跨帧 × 100 帧（不同文件）")
+                st.pyplot(render_four_algo_bars(
+                    np.array([
+                        stat["avg_full_aes_gcm_ms"],
+                        stat["avg_sel_aes_gcm_ms"],
+                        stat["avg_sel_chacha_ms"],
+                        stat["avg_sel_cbc_ms"],
+                    ]),
+                    np.array([
+                        stat["std_full_aes_gcm_ms"],
+                        stat["std_sel_aes_gcm_ms"],
+                        stat["std_sel_chacha_ms"],
+                        stat["std_sel_cbc_ms"],
+                    ]),
+                    include_full=True,
+                ))
+
+            st.markdown("##### 汇总数据表")
+            rows = ["全量 AES-GCM", "选择性 AES-GCM", "选择性 ChaCha20-Poly1305", "选择性 AES-CBC"]
+            stat_vals = [
+                f"{stat['avg_full_aes_gcm_ms']:.3f} ± {stat['std_full_aes_gcm_ms']:.3f}",
+                f"{stat['avg_sel_aes_gcm_ms']:.3f} ± {stat['std_sel_aes_gcm_ms']:.3f}",
+                f"{stat['avg_sel_chacha_ms']:.3f} ± {stat['std_sel_chacha_ms']:.3f}",
+                f"{stat['avg_sel_cbc_ms']:.3f} ± {stat['std_sel_cbc_ms']:.3f}",
+            ]
+            snap_std = [f"{float(v):.3f} ± {float(s):.3f}" for v, s in zip(snap["means"], snap["stds"])]
+            table_data = {
+                "方案": rows,
+                "单帧100次 均值±标准差": snap_std,
+                "跨帧100帧 均值±标准差": stat_vals,
+            }
+            st.dataframe(table_data, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown(
+                f"**本地预跑 100 帧真实数据**：`benchmark_results.json`\n"
+                f"- 设备：{bench_json['metadata'].get('device', 'N/A')}\n"
+                f"- 时间戳：{bench_json['metadata'].get('timestamp', 'N/A')}\n"
+                f"- 平均隐私目标占比：**{stat['avg_car_ratio']*100:.2f}%**\n"
+                f"- 平均 RandLA-Net 推理耗时：**{stat['avg_inference_ms']:.2f} ms/帧**"
+            )
+        elif snap.get("cross_loaded") and snap.get("cross_bench") is not None:
             cross = snap["cross_bench"]
             cross_means_arr = np.array(snap["cross_means"])
             cross_stds_arr = np.array(snap["cross_stds"])
@@ -862,34 +936,38 @@ else:
                     )
                 )
 
-        st.markdown("##### 汇总数据表")
-        rows = [
-            "全量 AES-GCM",
-            "选择性 AES-GCM",
-            "选择性 ChaCha20-Poly1305",
-            "选择性 AES-CBC",
-        ]
-        col1 = snap["means"]
-        std1 = snap["stds"]
-        cross_loaded = bool(snap.get("cross_loaded"))
-        cm = list(snap["cross_means"]) if cross_loaded and snap.get("cross_means") is not None else []
-        cs = list(snap["cross_stds"]) if cross_loaded and snap.get("cross_stds") is not None else []
-        if len(cm) == 4:
-            cross_means4, cross_stds4 = cm, cs
-        elif len(cm) == 3:
-            cross_means4, cross_stds4 = ["—"] + cm, ["—"] + cs
+            st.markdown("##### 汇总数据表")
+            rows = [
+                "全量 AES-GCM",
+                "选择性 AES-GCM",
+                "选择性 ChaCha20-Poly1305",
+                "选择性 AES-CBC",
+            ]
+            col1 = snap["means"]
+            std1 = snap["stds"]
+            cross_loaded = bool(snap.get("cross_loaded"))
+            cm = list(snap["cross_means"]) if cross_loaded and snap.get("cross_means") is not None else []
+            cs = list(snap["cross_stds"]) if cross_loaded and snap.get("cross_stds") is not None else []
+            if len(cm) == 4:
+                cross_means4, cross_stds4 = cm, cs
+            elif len(cm) == 3:
+                cross_means4, cross_stds4 = ["—"] + cm, ["—"] + cs
+            else:
+                cross_means4, cross_stds4 = ["—"] * 4, ["—"] * 4
+            table_data = {"方案": rows}
+            for i, label in enumerate(["单帧100次 均值±标准差", "跨帧100帧 均值±标准差"]):
+                vals = []
+                for j in range(len(rows)):
+                    src_means = col1 if i == 0 else cross_means4
+                    src_stds = std1 if i == 0 else cross_stds4
+                    v = src_means[j]
+                    s = src_stds[j]
+                    vals.append("—" if v == "—" else f"{float(v):.3f} ± {float(s):.3f}")
+                table_data[label] = vals
+            st.dataframe(table_data, use_container_width=True)
         else:
-            cross_means4, cross_stds4 = ["—"] * 4, ["—"] * 4
-        table_data = {"方案": rows}
-        for i, label in enumerate(["单帧100次 均值±标准差", "跨帧100帧 均值±标准差"]):
-            vals = []
-            for j in range(len(rows)):
-                src_means = col1 if i == 0 else cross_means4
-                src_stds = std1 if i == 0 else cross_stds4
-                v = src_means[j]
-                s = src_stds[j]
-                vals.append("—" if v == "—" else f"{float(v):.3f} ± {float(s):.3f}")
-            table_data[label] = vals
+            st.markdown("##### 跨帧 × 100 帧（不同文件）")
+            st.info("⚠️ 尚未加载跨帧数据。请上传 `benchmark_results.json` 或配置 velodyne 目录。")
         st.dataframe(table_data, use_container_width=True)
 
     with tab_d:
