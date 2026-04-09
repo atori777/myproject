@@ -373,7 +373,7 @@ def run_cross_frame_benchmark(
             out["n_tgt"].append(n_tgt)
         return out
 
-    eng = engine if engine is not None else PointPrivacyEngine()
+    eng = engine if engine is not None else PointPrivacyEngine(cuda=True)
     chosen = list(rng.choice(all_files, size=min(n_frames, len(all_files)), replace=False))
     progress_bar = None
 
@@ -691,7 +691,7 @@ if process_btn:
     if uploaded_bin is not None:
         if "engine" not in st.session_state:
             with st.spinner("首次加载 RandLA-Net（约需数十秒）…"):
-                st.session_state.engine = PointPrivacyEngine()
+                st.session_state.engine = PointPrivacyEngine(cuda=True)
         engine = st.session_state.engine
 
         import tempfile
