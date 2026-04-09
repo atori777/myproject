@@ -537,24 +537,12 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("##### 2. 数据")
     st.caption(
-        "先上传一帧 `.bin` 再点执行。**跨帧 100 帧**优先读仓库根目录或 `app.py` 同目录下的 **`benchmark_results.json`**（本地预跑后上传）；"
-        "没有 JSON 时再尝试侧栏 velodyne 或内置 100 帧目录。"
+        "上传一帧 `.bin` 后点「执行处理」。**跨帧 100 帧**由仓库中的 **`benchmark_results.json`** 展示（本地 `generate_benchmark_json.py` 预跑后提交）。"
     )
     uploaded_bin = st.file_uploader(
         "选择单帧点云 .bin 文件",
         type=["bin"],
-        help="本页所有「单帧×100 次」图表都来自你上传的这一帧；跨帧测时与上传文件无关，读内置或侧栏目录。",
-    )
-
-    velodyne_folder_input = st.text_input(
-        "velodyne 文件夹路径（直接填到 velodyne 为止）",
-        value="datasets/semantic_kitti/dataset/sequences/00/velodyne",
-        placeholder="datasets/semantic_kitti/dataset/sequences/00/velodyne",
-        help=(
-            "须为含 KITTI `.bin` 的 velodyne 文件夹（以 /velodyne 结尾），且至少 2 个 .bin。"
-            " 在 Streamlit Cloud / Linux 上请填 **仓库内相对路径**（如默认占位符），"
-            "不要使用本机 `D:\\...`——云端服务器没有你的硬盘。"
-        ),
+        help="「单帧×100 次」来自本地上传的这一帧；跨帧结果来自 benchmark_results.json，与上传文件无关。",
     )
 
     st.markdown("---")
@@ -653,35 +641,15 @@ def _load_bin_from_path(path):
     return pts[:, :3].copy()
 
 
-def _looks_like_windows_drive_path(path: str) -> bool:
-    """本机 Windows 盘符路径；在 Linux/Streamlit Cloud 上不存在。"""
-    if not path or len(path) < 2:
-        return False
-    return path[1] == ":" and path[0].isalpha()
-
-
 # ── 内置 100 帧基准测试目录（仓库内，轻量，约 100 个 .bin）────
 BUILTIN_BENCH_DIR = os.path.join(os.path.dirname(__file__), "datasets", "benchmark", "100_frames")
 
 
-def _resolve_cross_folder(user_path: str):
-    """
-    跨帧测时目录优先级：
-    1. 内置 benchmark 目录（含 100 个 .bin，云端开箱即用）
-    2. 用户侧栏填写的 velodyne 路径（本地开发 / 自备数据集）
-    返回 (resolved_path, source_label)；均无效则返回 (None, None)。
-    """
+def _resolve_cross_folder():
+    """若仓库含内置 100 帧 .bin 目录，则本次「执行处理」可顺带跑实时跨帧；否则跨帧仅依赖 JSON 展示。"""
     if os.path.isdir(BUILTIN_BENCH_DIR) and len(glob.glob(os.path.join(BUILTIN_BENCH_DIR, "*.bin"))) >= 2:
         return BUILTIN_BENCH_DIR, "内置 100 帧基准"
-    user_norm = os.path.normpath(user_path)
-    if os.path.isdir(user_norm):
-        user_bins = len(glob.glob(os.path.join(user_norm, "*.bin")))
-        if user_bins >= 2:
-            return user_norm, f"侧栏路径（{user_bins} 个 .bin）"
     return None, None
-
-
-velodyne_folder = os.path.normpath(velodyne_folder_input)
 
 if process_btn:
     # ── 上传文件优先 ──────────────────────────────────────
@@ -726,7 +694,7 @@ if process_btn:
 
         bench = run_100_frame_crypto_benchmark(xyz, mask, key_size, n_frames=100)
 
-        cross_folder, cross_source = _resolve_cross_folder(velodyne_folder)
+        cross_folder, cross_source = _resolve_cross_folder()
         if cross_folder is None:
             cross_bench = None
         else:
@@ -745,33 +713,10 @@ if process_btn:
         if cross_bench is not None:
             src_note = cross_source if cross_source else "内置 100 帧基准"
             st.success(f"✅ 100 帧跨帧测时已完成（{src_note}，100 个不同 .bin）。")
-        else:
-            w = (
-                "跨帧测时未执行：内置基准目录和侧栏路径均无效（需至少 2 个 .bin）。"
-            )
-            if _looks_like_windows_drive_path(velodyne_folder_input.strip()):
-                w += " 在云端请勿使用本机 `D:\\...`，应使用仓库相对路径。"
-            st.warning(w)
 
     # ── 未上传文件 → 报错 ───────────────────────────────
     else:
-        # 未上传时唯一必要条件：上传 .bin。侧栏 velodyne 路径不参与「能否开始」；
-        # 跨帧测时由 _resolve_cross_folder 优先使用内置 benchmark，避免误报「文件夹不存在」。
         st.error("请先上传一个 `.bin` 文件，再点击「执行处理」。")
-        builtin_ok = (
-            os.path.isdir(BUILTIN_BENCH_DIR)
-            and len(glob.glob(os.path.join(BUILTIN_BENCH_DIR, "*.bin"))) >= 2
-        )
-        if not builtin_ok and not os.path.isdir(velodyne_folder):
-            st.caption(
-                f"提示：侧栏路径 `{velodyne_folder}` 在服务器上不存在。"
-                " 若需跨帧测时，请提交 **`benchmark_results.json`**（与 app.py 同目录），"
-                "或填写服务器上存在的 velodyne 目录。"
-            )
-            if _looks_like_windows_drive_path(velodyne_folder_input.strip()):
-                st.caption(
-                    "云端不能使用本机 `D:\\...`；请改用仓库相对路径或依赖内置 benchmark 目录。"
-                )
 
 snap = st.session_state.last_snapshot
 
@@ -877,10 +822,9 @@ else:
         else:
             tried = "、".join(_benchmark_json_candidates())
             st.info(
-                "⚠️ 未找到跨帧数据：请把 **`benchmark_results.json`** 放在与 **`app.py` 同一目录**（或仓库根目录），"
-                "并 **push 最新 `app.py`** 后重新部署 Streamlit Cloud。"
+                "⚠️ 未找到 **`benchmark_results.json`**。请将文件放在与 **`app.py` 同一目录**或仓库根目录，"
+                "并重新部署。"
                 f" 已查找：`{tried}`。"
-                " 若仍无数据，可侧栏填写服务器上的 velodyne 目录（≥2 个 .bin）后再次「执行处理」。"
             )
 
     with tab_c:
@@ -979,9 +923,9 @@ else:
                 table_data[label] = vals
             st.dataframe(table_data, use_container_width=True)
         else:
-            st.markdown("##### 跨帧 × 100 帧（不同文件）")
-            st.info("⚠️ 尚未加载跨帧数据。请上传 `benchmark_results.json` 或配置 velodyne 目录。")
-        st.dataframe(table_data, use_container_width=True)
+            with col_c:
+                st.markdown("##### 跨帧 × 100 帧（不同文件）")
+                st.info("⚠️ 请提交 **`benchmark_results.json`** 后与左侧单帧柱状图对照查看。")
 
     with tab_d:
         if show_attack_view and snap["num_target"] > 0:
@@ -1061,8 +1005,8 @@ else:
             )
         else:
             st.info(
-                "⚠️ 跨帧数据尚未加载（同 Tab B 的说明）。"
-                "填入 velodyne 目录并重新「执行处理」后此处会展示跨帧详细统计。"
+                "⚠️ 跨帧详细曲线依赖会话内实时测时或 **`benchmark_results.json`**。"
+                "云端一般使用 JSON；若需本页三张图，请部署含 JSON 的仓库或本地执行处理。"
             )
 
         st.markdown("---")
