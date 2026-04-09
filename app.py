@@ -8,6 +8,7 @@ import os
 import time
 import tempfile
 import torch
+
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -373,7 +374,8 @@ def run_cross_frame_benchmark(
             out["n_tgt"].append(n_tgt)
         return out
 
-    eng = engine if engine is not None else PointPrivacyEngine(device=torch.device('cuda'))
+    eng = engine if engine is not None else PointPrivacyEngine(
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
     chosen = list(rng.choice(all_files, size=min(n_frames, len(all_files)), replace=False))
     progress_bar = None
 
@@ -691,7 +693,8 @@ if process_btn:
     if uploaded_bin is not None:
         if "engine" not in st.session_state:
             with st.spinner("首次加载 RandLA-Net（约需数十秒）…"):
-                st.session_state.engine = PointPrivacyEngine(device=torch.device('cuda'))
+                st.session_state.engine = PointPrivacyEngine(
+                    device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
         engine = st.session_state.engine
 
         import tempfile
