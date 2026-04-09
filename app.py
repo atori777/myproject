@@ -7,7 +7,7 @@ Streamlit 演示：车联网点云选择性隐私保护
 import os
 import time
 import tempfile
-
+import torch
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
