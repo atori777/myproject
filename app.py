@@ -514,12 +514,13 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("##### 2. 数据")
     st.caption(
-        "上传仅提供当前帧；100 帧跨帧测时需侧栏填写服务器上 **velodyne** 目录（该目录下至少 2 个 .bin）。"
+        "先上传一帧 `.bin` 再点执行。**跨帧 100 帧**优先用仓库内 `datasets/benchmark/100_frames`（约 100 个 .bin）；"
+        "没有时再填侧栏 velodyne 路径。"
     )
     uploaded_bin = st.file_uploader(
         "选择单帧点云 .bin 文件",
         type=["bin"],
-        help="浏览器上传的文件在云端无兄弟路径，跨帧依赖下方文本框中的 velodyne 目录。",
+        help="本页所有「单帧×100 次」图表都来自你上传的这一帧；跨帧测时与上传文件无关，读内置或侧栏目录。",
     )
 
     velodyne_folder_input = st.text_input(
@@ -660,8 +661,6 @@ def _resolve_cross_folder(user_path: str):
 velodyne_folder = os.path.normpath(velodyne_folder_input)
 
 if process_btn:
-    all_bins = sorted(glob.glob(os.path.join(velodyne_folder, "*.bin"))) if os.path.isdir(velodyne_folder) else []
-
     # ── 上传文件优先 ──────────────────────────────────────
     if uploaded_bin is not None:
         if "engine" not in st.session_state:
@@ -733,28 +732,31 @@ if process_btn:
 
     # ── 未上传文件 → 报错 ───────────────────────────────
     else:
-        folder_ok = os.path.isdir(velodyne_folder)
-        if folder_ok:
-            if len(all_bins) < 2:
-                st.error(f"该文件夹只有 {len(all_bins)} 个 `.bin`，需要至少 2 个。")
-            else:
-                st.error("请上传一个 .bin 文件以继续。")
-        else:
-            msg = f"velodyne 文件夹不存在：`{velodyne_folder}`\n请确认路径正确。"
+        # 未上传时唯一必要条件：上传 .bin。侧栏 velodyne 路径不参与「能否开始」；
+        # 跨帧测时由 _resolve_cross_folder 优先使用内置 benchmark，避免误报「文件夹不存在」。
+        st.error("请先上传一个 `.bin` 文件，再点击「执行处理」。")
+        builtin_ok = (
+            os.path.isdir(BUILTIN_BENCH_DIR)
+            and len(glob.glob(os.path.join(BUILTIN_BENCH_DIR, "*.bin"))) >= 2
+        )
+        if not builtin_ok and not os.path.isdir(velodyne_folder):
+            st.caption(
+                f"提示：侧栏路径 `{velodyne_folder}` 在服务器上不存在。"
+                " 若需跨帧测时，请将仓库内 `datasets/benchmark/100_frames/` 随部署提交（约 100 个 .bin），"
+                "或填写本机/仓库内存在的 velodyne 目录。"
+            )
             if _looks_like_windows_drive_path(velodyne_folder_input.strip()):
-                msg += (
-                    "\n\n若在 **Streamlit Cloud** 或远程 Linux 上运行：不能使用本机 `D:\\...`，"
-                    "请改为仓库根目录下的相对路径，例如："
-                    "`datasets/semantic_kitti/dataset/sequences/00/velodyne`（并确保该目录已随仓库部署）。"
+                st.caption(
+                    "云端不能使用本机 `D:\\...`；请改用仓库相对路径或依赖内置 benchmark 目录。"
                 )
-            st.error(msg)
 
 snap = st.session_state.last_snapshot
 
 if snap is None:
     st.info(
-        "👈 上传一个 `.bin` 文件作为单帧演示；侧栏填入 velodyne 目录路径用于跨帧 100 帧测时。"
-        " 点击 **执行处理** 即可运行。"
+        "👈 **上传**一个 `.bin` 后点击 **执行处理**。"
+        " 「单帧×100 次」折线图来自该上传帧；**跨帧×100 帧**优先读仓库内 `datasets/benchmark/100_frames`，"
+        "无需完整 KITTI velodyne 路径。"
     )
 else:
     xyz = snap["xyz"]
@@ -800,6 +802,11 @@ else:
 
     with tab_b:
         st.subheader("稳定性验证：同一点云 × 100 次加密")
+        st.caption(
+            "**数据来源**：上次「执行处理」时**上传的那一帧**点云；RandLA-Net 得到掩码后，"
+            "对**同一批目标点**重复执行四算法加密 **100 次**，只统计加密耗时（不含模型推理）。"
+            " 与下方「跨帧」无关。"
+        )
         st.markdown(
             "**目的**：验证选择性加密耗时在**同规模数据**下的稳定性（抖动小 = 算法可靠）。"
             " 横轴第几次，纵轴这一次花了多少毫秒；线越平越稳。"
@@ -831,7 +838,8 @@ else:
             cc4.metric("跨帧 AES-CBC 均值", f"{np.mean(cross['sel_cbc_ms']):.3f} ms")
         else:
             st.info(
-                "⚠️ 尚未加载跨帧数据。请侧栏填写 **velodyne 文件夹路径**（与上传的 .bin 同目录），"
+                "⚠️ 尚未加载跨帧数据。请确认仓库已包含 **`datasets/benchmark/100_frames/`**（约 100 个 .bin）"
+                " 并重新部署；或侧栏填写服务器上存在的 **velodyne** 目录（≥2 个 .bin）。"
                 " 再点击「执行处理」。"
             )
 
