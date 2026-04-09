@@ -5,6 +5,7 @@ Streamlit 演示：车联网点云选择性隐私保护
 - 四算法：全量 AES-GCM、选择性 AES-GCM、选择性 ChaCha20-Poly1305、选择性 AES-CBC
 """
 import os
+import json
 import time
 import tempfile
 import torch
@@ -59,15 +60,25 @@ def setup_matplotlib_cjk():
 _CJK_FONT = setup_matplotlib_cjk()
 
 # ==================== JSON 基准数据加载 ====================
-BENCHMARK_JSON_PATH = os.path.join(os.path.dirname(__file__), "benchmark_results.json")
+def _benchmark_json_candidates():
+    """多路径查找，兼容 Streamlit Cloud（工作目录可能与 app.py 不同）。"""
+    base = os.path.dirname(os.path.abspath(__file__))
+    return [
+        os.path.join(base, "benchmark_results.json"),
+        os.path.join(os.getcwd(), "benchmark_results.json"),
+    ]
 
 
 def load_benchmark_json():
-    """从 benchmark_results.json 加载本地预跑的 100 帧真实数据。"""
-    if os.path.exists(BENCHMARK_JSON_PATH):
-        import json
-        with open(BENCHMARK_JSON_PATH, encoding='utf-8') as f:
-            return json.load(f)
+    """从 benchmark_results.json 加载本地预跑的 100 帧真实数据（与 app.py 同目录或仓库根目录）。"""
+    for path in _benchmark_json_candidates():
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
     return None
 
 
@@ -526,8 +537,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("##### 2. 数据")
     st.caption(
-        "先上传一帧 `.bin` 再点执行。**跨帧 100 帧**优先用仓库内 `datasets/benchmark/100_frames`（约 100 个 .bin）；"
-        "没有时再填侧栏 velodyne 路径。"
+        "先上传一帧 `.bin` 再点执行。**跨帧 100 帧**优先读仓库根目录或 `app.py` 同目录下的 **`benchmark_results.json`**（本地预跑后上传）；"
+        "没有 JSON 时再尝试侧栏 velodyne 或内置 100 帧目录。"
     )
     uploaded_bin = st.file_uploader(
         "选择单帧点云 .bin 文件",
@@ -754,8 +765,8 @@ if process_btn:
         if not builtin_ok and not os.path.isdir(velodyne_folder):
             st.caption(
                 f"提示：侧栏路径 `{velodyne_folder}` 在服务器上不存在。"
-                " 若需跨帧测时，请将仓库内 `datasets/benchmark/100_frames/` 随部署提交（约 100 个 .bin），"
-                "或填写本机/仓库内存在的 velodyne 目录。"
+                " 若需跨帧测时，请提交 **`benchmark_results.json`**（与 app.py 同目录），"
+                "或填写服务器上存在的 velodyne 目录。"
             )
             if _looks_like_windows_drive_path(velodyne_folder_input.strip()):
                 st.caption(
@@ -767,8 +778,8 @@ snap = st.session_state.last_snapshot
 if snap is None:
     st.info(
         "👈 **上传**一个 `.bin` 后点击 **执行处理**。"
-        " 「单帧×100 次」折线图来自该上传帧；**跨帧×100 帧**优先读仓库内 `datasets/benchmark/100_frames`，"
-        "无需完整 KITTI velodyne 路径。"
+        " 「单帧×100 次」折线图来自该上传帧；**跨帧×100 帧**优先读 **`benchmark_results.json`**，"
+        "无需在云端放完整 KITTI 数据。"
     )
 else:
     xyz = snap["xyz"]
@@ -829,7 +840,7 @@ else:
         cb1.metric("全量 AES-GCM 均值", f"{np.mean(b['full_aes_gcm_ms']):.3f} ms")
         cb2.metric("选择性 AES-GCM 均值", f"{np.mean(b['sel_aes_gcm_ms']):.3f} ms")
         cb3.metric("选择性 ChaCha20 均值", f"{np.mean(b['sel_chacha_ms']):.3f} ms")
-        cb4.metric("选择性 AES-CBC 均���", f"{np.mean(b['sel_cbc_ms']):.3f} ms")
+        cb4.metric("选择性 AES-CBC 均值", f"{np.mean(b['sel_cbc_ms']):.3f} ms")
 
         st.markdown("---")
         st.subheader("泛化性验证：100 帧各测一次")
@@ -864,10 +875,12 @@ else:
             cc3.metric("跨帧 ChaCha20 均值", f"{np.mean(cross['sel_chacha_ms']):.3f} ms")
             cc4.metric("跨帧 AES-CBC 均值", f"{np.mean(cross['sel_cbc_ms']):.3f} ms")
         else:
+            tried = "、".join(_benchmark_json_candidates())
             st.info(
-                "⚠️ 尚未加载跨帧数据。请确认仓库已包含 **`benchmark_results.json`** 并重新部署；"
-                " 或侧栏填写服务器上存在的 **velodyne** 目录（≥2 个 .bin）。"
-                " 再点击「执行处理」。"
+                "⚠️ 未找到跨帧数据：请把 **`benchmark_results.json`** 放在与 **`app.py` 同一目录**（或仓库根目录），"
+                "并 **push 最新 `app.py`** 后重新部署 Streamlit Cloud。"
+                f" 已查找：`{tried}`。"
+                " 若仍无数据，可侧栏填写服务器上的 velodyne 目录（≥2 个 .bin）后再次「执行处理」。"
             )
 
     with tab_c:
