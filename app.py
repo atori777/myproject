@@ -64,46 +64,12 @@ def _lbl(en: str, zh: str) -> str:
     return zh if _CJK_FONT else en
 
 
-def build_synthetic_demo_frame(demo_seed: int, n_pts: int = None):
-    """无本地 velodyne 时生成一帧类似 KITTI 分布的点云（仅稳定展示）。"""
-    rng = np.random.default_rng(int(demo_seed))
-    if n_pts is None:
-        n_pts = int(rng.integers(75000, 125000))
-    xyz = np.column_stack(
-        [
-            rng.uniform(-45.0, 45.0, n_pts).astype(np.float32),
-            rng.uniform(-45.0, 45.0, n_pts).astype(np.float32),
-            rng.uniform(-2.5, 2.5, n_pts).astype(np.float32),
-        ]
-    )
-    mask = adaptive_detection(xyz)
-    if not np.any(mask):
-        mask = (xyz[:, 0] > 6) & (xyz[:, 0] < 28) & (np.abs(xyz[:, 1]) < 8) & (xyz[:, 2] > -2) & (xyz[:, 2] < 2.5)
-    return xyz, mask
-
-
-# ==================== 业务逻辑 ====================
-
 def adaptive_detection(xyz):
     mask = (xyz[:, 0] > 5) & (xyz[:, 0] < 30) & (np.abs(xyz[:, 1]) < 6) & (xyz[:, 2] > -1.5) & (xyz[:, 2] < 2)
     return mask
 
 
-def secure_encryption_engine(target_points, key_size, measurement_mode="真实测量", demo_seed=42):
-    if measurement_mode == "稳定展示":
-        np.random.seed(demo_seed)
-        key_bytes = np.random.randint(0, 256, size=key_size // 8, dtype=np.uint8)
-        key = bytes(key_bytes)
-        nonce = b"fixednonce12"
-        base_time_per_point = 0.00105 if key_size == 128 else 0.001417
-        actual_time = len(target_points) * base_time_per_point
-        aesgcm = AESGCM(key)
-        plaintext = target_points.astype(np.float32).tobytes()
-        ciphertext = aesgcm.encrypt(nonce, plaintext, None)
-        decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
-        decrypted_pts = np.frombuffer(decrypted_data, dtype=np.float32).reshape(-1, 3)
-        return decrypted_pts, actual_time, ciphertext
-
+def secure_encryption_engine(target_points, key_size):
     key = AESGCM.generate_key(bit_length=key_size)
     nonce = os.urandom(12)
     t_start = time.perf_counter()
@@ -127,7 +93,7 @@ def encrypt_selective_aes_cbc(data_bytes, aes_key):
     return enc.update(padded) + enc.finalize()
 
 
-def run_100_frame_crypto_benchmark(xyz, mask, key_size, measurement_mode, demo_seed, n_frames=100):
+def run_100_frame_crypto_benchmark(xyz, mask, key_size, n_frames=100):
     """
     对当前点云重复 n_frames 次加密测时（语义上等价于同规模帧的批量统计，避免云端推理 100 次超时）。
     返回各序列长度 n_frames 的毫秒列表。
@@ -146,18 +112,6 @@ def run_100_frame_crypto_benchmark(xyz, mask, key_size, measurement_mode, demo_s
     sel_plain = target_pts.astype(np.float32).tobytes()
     n_sel = len(sel_plain)
     n_full = len(full_plain)
-
-    if measurement_mode == "稳定展示":
-        rng = np.random.default_rng(int(demo_seed))
-        bf = 0.002 * (n_full / 1e6)
-        bs = 0.002 * (n_sel / 1e6)
-        gcm_scale = 1.15 if key_size == 256 else 1.0
-        for _ in range(n_frames):
-            out["full_aes_gcm_ms"].append(max(0.01, bf * 1000 * gcm_scale + rng.normal(0, bf * 50)))
-            out["sel_aes_gcm_ms"].append(max(0.01, bs * 1000 * gcm_scale + rng.normal(0, bs * 50)))
-            out["sel_chacha_ms"].append(max(0.01, bs * 1100 + rng.normal(0, bs * 55)))
-            out["sel_cbc_ms"].append(max(0.01, bs * 1300 + rng.normal(0, bs * 60)))
-        return out
 
     key_gcm = AESGCM.generate_key(bit_length=key_size)
     cbc_key = key_gcm[:16] if key_size == 128 else key_gcm
@@ -185,9 +139,7 @@ def run_100_frame_crypto_benchmark(xyz, mask, key_size, measurement_mode, demo_s
     return out
 
 
-def render_triple_comparison(xyz, mask, recovered_pts, measurement_mode="真实测量", demo_seed=42):
-    if measurement_mode == "稳定展示":
-        np.random.seed(demo_seed)
+def render_triple_comparison(xyz, mask, recovered_pts):
 
     fig, axes = plt.subplots(1, 3, figsize=(20, 6.5), facecolor="#f0f2f6")
 
@@ -224,17 +176,13 @@ def render_triple_comparison(xyz, mask, recovered_pts, measurement_mode="真实�
     return fig
 
 
-def render_performance_metrics(sel_time, total_pts, target_pts, key_size, measurement_mode="真实测量", full_time_fixed=None):
+def render_performance_metrics(sel_time, total_pts, target_pts, key_size, full_time_fixed=None):
     """
     full_time_fixed: 若给定则不再随机，用于从 session 重绘柱状图。
     返回 (fig, improvement, full_time)。
     """
     if full_time_fixed is not None:
         full_time = float(full_time_fixed)
-    elif measurement_mode == "稳定展示":
-        base_time_per_1k = 0.105 if key_size == 128 else 0.1417
-        full_time = (total_pts / 1000) * base_time_per_1k
-        full_time = max(full_time, sel_time * 8)
     else:
         full_time_base = 10.5 if key_size == 128 else 14.2
         full_time = full_time_base + np.random.uniform(-0.3, 0.3)
@@ -327,14 +275,11 @@ def run_cross_frame_benchmark(
     velodyne_dir: str,
     key_size: int,
     n_frames: int = 100,
-    measurement_mode="稳定展示",
-    demo_seed=42,
     engine=None,
 ):
     """
     从 velodyne_dir 下随机抽取 n_frames 个 .bin 文件，逐帧推理 + 四算法加密计时。
-    若目录不存在或文件不足，自动回退到「模拟同一规模数据 × n_frames」的稳定展示数据。
-
+    若目录不存在或文件不足，返回错误。
     返回 dict: {algo: [times_ms_per_frame]}
     """
     if velodyne_dir and os.path.isdir(velodyne_dir):
@@ -342,7 +287,10 @@ def run_cross_frame_benchmark(
     else:
         all_files = []
 
-    rng = np.random.default_rng(int(demo_seed))
+    if len(all_files) < 2:
+        return None
+
+    rng = np.random.default_rng(42)
     gcm_key = AESGCM.generate_key(bit_length=key_size)
     cbc_key = gcm_key[: min(key_size // 8, 32)]
     key32 = os.urandom(32)
@@ -357,22 +305,6 @@ def run_cross_frame_benchmark(
         "n_pts": [],
         "n_tgt": [],
     }
-
-    if measurement_mode == "稳定展示" or len(all_files) < 2:
-        base_sel = 0.002
-        gcm_s = 1.15 if key_size == 256 else 1.0
-        for i in range(n_frames):
-            n_pts = rng.integers(60000, 130000)
-            n_tgt = int(n_pts * rng.uniform(0.08, 0.18))
-            t_full = base_sel * (n_pts / 1e6) * 1000 * gcm_s
-            t_sel = base_sel * (n_tgt / 1e6) * 1000 * gcm_s
-            out["full_aes_gcm_ms"].append(max(0.01, t_full + rng.normal(0, t_full * 0.04)))
-            out["sel_aes_gcm_ms"].append(max(0.01, t_sel + rng.normal(0, t_sel * 0.04)))
-            out["sel_chacha_ms"].append(max(0.01, t_sel * 1.1 + rng.normal(0, t_sel * 0.05)))
-            out["sel_cbc_ms"].append(max(0.01, t_sel * 1.35 + rng.normal(0, t_sel * 0.06)))
-            out["n_pts"].append(n_pts)
-            out["n_tgt"].append(n_tgt)
-        return out
 
     eng = engine if engine is not None else PointPrivacyEngine(
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -449,10 +381,7 @@ def render_cross_frame_lines(cross, n_show=100):
     return fig
 
 
-def render_attacker_view(xyz, mask, measurement_mode="真实测量", demo_seed=42):
-    if measurement_mode == "稳定展示":
-        np.random.seed(demo_seed)
-
+def render_attacker_view(xyz, mask):
     fig, axes = plt.subplots(1, 3, figsize=(20, 6.5), facecolor="#ffe6e6")
 
     axes[0].text(
@@ -582,13 +511,6 @@ st.caption(font_hint)
 
 with st.sidebar:
     st.header("⚙️ 控制面板")
-    st.markdown("##### 1. 测量模式")
-    measurement_mode = st.radio("", ["真实测量", "稳定展示"], index=0, label_visibility="collapsed")
-    if measurement_mode == "稳定展示":
-        demo_seed = st.number_input("随机种子", value=42, min_value=0, max_value=9999)
-    else:
-        demo_seed = 42
-
     st.markdown("---")
     st.markdown("##### 2. 数据")
     st.caption("直接选一个 .bin 文件（会自动用同目录其余帧做 100 帧跨帧测时）")
@@ -623,8 +545,8 @@ with st.sidebar:
 # ==================== 主流程 ====================
 
 def _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
-                     ciphertext, bench, cross_bench, measurement_mode,
-                     demo_seed, num_points, num_target, key_size, cross_dir_label):
+                     ciphertext, bench, cross_bench,
+                     num_points, num_target, key_size, cross_dir_label):
     """共用：计算统计量 → 存 session → 成功提示。"""
     cross_means = [float(np.mean(cross_bench[k])) for k in (
         "full_aes_gcm_ms", "sel_aes_gcm_ms", "sel_chacha_ms", "sel_cbc_ms")]
@@ -637,7 +559,7 @@ def _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
              for k in ("full_aes_gcm_ms", "sel_aes_gcm_ms", "sel_chacha_ms", "sel_cbc_ms")]
 
     fig_cmp, improvement, full_time_bar = render_performance_metrics(
-        crypto_time, num_points, max(num_target, 1), key_size, measurement_mode)
+        crypto_time, num_points, max(num_target, 1), key_size)
 
     st.session_state.batch_results.append({
         "key_size": key_size, "improvement": improvement,
@@ -648,18 +570,17 @@ def _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
     st.session_state["cross_dir"]   = cross_dir_label
     st.session_state.last_snapshot = dict(
         xyz=xyz, mask=mask, recovered_pts=recovered_pts,
-        measurement_mode=measurement_mode, demo_seed=demo_seed,
         num_points=num_points, num_target=num_target,
         sense_time=sense_time, key_size=key_size, crypto_time=crypto_time,
         ciphertext=ciphertext, bench=bench, means=means, stds=stds,
         full_time_bar=full_time_bar, improvement=improvement,
         cross_bench=cross_bench, cross_means=cross_means,
-        cross_stds=cross_stds, cross_loaded=True,
+        cross_stds=cross_stds, cross_loaded=cross_bench is not None,
         cross_dir=cross_dir_label,
     )
 
 
-def _load_and_process_sample(sample_path, key_size, measurement_mode, demo_seed, engine):
+def _load_and_process_sample(sample_path, key_size, engine):
     """单帧演示：读取 .bin → RandLA-Net 推理 → 加密 → 返回点云/掩码/耗时。"""
     pts = np.frombuffer(open(sample_path, "rb").read(), dtype=np.float32).reshape(-1, 4)
     xyz = pts[:, :3].copy()
@@ -672,8 +593,7 @@ def _load_and_process_sample(sample_path, key_size, measurement_mode, demo_seed,
     num_target = int(np.sum(mask))
     target_pts = xyz[mask]
     if len(target_pts) > 0:
-        recovered_pts, crypto_time, ciphertext = secure_encryption_engine(
-            target_pts, key_size, measurement_mode, demo_seed)
+        recovered_pts, crypto_time, ciphertext = secure_encryption_engine(target_pts, key_size)
     else:
         recovered_pts, crypto_time, ciphertext = np.empty((0, 3)), 0.0001, b""
     return xyz, mask, recovered_pts, sense_time, crypto_time, ciphertext, num_points, num_target
@@ -725,58 +645,32 @@ if process_btn:
         target_pts = xyz[mask]
         if len(target_pts) > 0:
             recovered_pts, crypto_time, ciphertext = secure_encryption_engine(
-                target_pts, key_size, measurement_mode, demo_seed)
+                target_pts, key_size)
         else:
             recovered_pts, crypto_time, ciphertext = np.empty((0, 3)), 0.0001, b""
 
-        bench = run_100_frame_crypto_benchmark(xyz, mask, key_size, measurement_mode, demo_seed, n_frames=100)
+        bench = run_100_frame_crypto_benchmark(xyz, mask, key_size, n_frames=100)
 
         # 跨帧测时用 velodyne_folder（用户文本路径）
         cross_folder = velodyne_folder if os.path.isdir(velodyne_folder) else None
         with st.spinner("正在对 100 帧各推理 + 加密…"):
             cross_bench = run_cross_frame_benchmark(
-                cross_folder, key_size, n_frames=100,
-                measurement_mode=measurement_mode, demo_seed=demo_seed, engine=engine)
+                cross_folder, key_size, n_frames=100, engine=engine)
 
         _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
-                         ciphertext, bench, cross_bench, measurement_mode,
-                         demo_seed, num_points, num_target, key_size,
+                         ciphertext, bench, cross_bench,
+                         num_points, num_target, key_size,
                          cross_dir_label=cross_folder)
         st.success(f"✅ 真实数据：`{uploaded_bin.name}`（{num_points} 点）；100 帧跨帧测时完成。")
 
-    # ── 稳定展示 + 路径无效 → 模拟数据 ────────────────────
-    elif measurement_mode == "稳定展示":
-        np.random.seed(int(demo_seed))
-        xyz, mask = build_synthetic_demo_frame(demo_seed)
-        num_points = len(xyz)
-        sense_time = float(850.0 + np.random.default_rng(int(demo_seed)).normal(0, 40))
-        num_target = int(np.sum(mask))
-        target_pts = xyz[mask]
-        if len(target_pts) > 0:
-            recovered_pts, crypto_time, ciphertext = secure_encryption_engine(
-                target_pts, key_size, measurement_mode, demo_seed)
-        else:
-            recovered_pts, crypto_time, ciphertext = np.empty((0, 3)), 0.0001, b""
-
-        bench = run_100_frame_crypto_benchmark(xyz, mask, key_size, measurement_mode, demo_seed, n_frames=100)
-        cross_bench = run_cross_frame_benchmark(
-            "__synthetic__", key_size, n_frames=100,
-            measurement_mode="稳定展示", demo_seed=demo_seed, engine=None)
-
-        _finish_and_save(xyz, mask, recovered_pts, sense_time, crypto_time,
-                         ciphertext, bench, cross_bench, measurement_mode,
-                         demo_seed, num_points, num_target, key_size,
-                         cross_dir_label="（模拟数据）")
-        st.success("✅ 稳定展示（模拟点云）：图表可正常展示。")
-
-    # ── 真实测量 + 路径无效 → 报错 ───────────────────────
+    # ── 未上传文件 → 报错 ───────────────────────────────
     else:
         folder_ok = os.path.isdir(velodyne_folder)
         if folder_ok:
             if len(all_bins) < 2:
                 st.error(f"该文件夹只有 {len(all_bins)} 个 `.bin`，需要至少 2 个。")
             else:
-                st.error(f"请上传一个 .bin 文件，或改为「稳定展示」用模拟数据。")
+                st.error("请上传一个 .bin 文件以继续。")
         else:
             st.error(f"velodyne 文件夹不存在：`{velodyne_folder}`\n请确认路径正确。")
 
@@ -784,14 +678,12 @@ snap = st.session_state.last_snapshot
 
 if snap is None:
     st.info(
-        "👈 上传一个 `.bin` 文件作为单帧演示；侧栏路径用于跨帧 100 帧测时（其余 `.bin`）。"
-        " 若不想上传，改为「稳定展示」可自动用模拟数据。点击 **执行处理** 即可运行。"
+        "👈 上传一个 `.bin` 文件作为单帧演示；侧栏填入 velodyne 目录路径用于跨帧 100 帧测时。"
+        " 点击 **执行处理** 即可运行。"
     )
 else:
     xyz = snap["xyz"]
     mask = snap["mask"]
-    measurement_mode = snap["measurement_mode"]
-    demo_seed = snap["demo_seed"]
 
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("总点数", f"{snap['num_points']:,}")
@@ -815,7 +707,7 @@ else:
         st.caption("下图标题使用英文，避免无 Noto 环境下出现方框；页面说明仍为中文。")
         st.pyplot(
             render_triple_comparison(
-                xyz, mask, snap["recovered_pts"], measurement_mode, demo_seed
+                xyz, mask, snap["recovered_pts"]
             )
         )
         fig_cmp, _, _ = render_performance_metrics(
@@ -823,7 +715,6 @@ else:
             snap["num_points"],
             max(snap["num_target"], 1),
             snap["key_size"],
-            measurement_mode,
             full_time_fixed=snap["full_time_bar"],
         )
         st.pyplot(fig_cmp)
@@ -921,7 +812,7 @@ else:
     with tab_d:
         if show_attack_view and snap["num_target"] > 0:
             st.subheader("攻击者视角（窃听 / 中间人 / 授权）")
-            st.pyplot(render_attacker_view(xyz, mask, measurement_mode, demo_seed))
+            st.pyplot(render_attacker_view(xyz, mask))
             st.info(
                 """
                 **安全性说明**：无密钥仅见密文；中间人篡改会破坏 GCM 校验；授权方可解密还原。
